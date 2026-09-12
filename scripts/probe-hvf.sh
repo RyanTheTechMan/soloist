@@ -34,3 +34,15 @@ xcrun clang --target=aarch64-linux-gnu -O1 -ffreestanding -fno-stack-protector \
 "$task_linker" -e _start -z max-page-size=65536 \
   "$runtime_root/build/multicast.o" -o "$runtime_root/build/multicast.elf"
 "$elfuse" --no-rosetta --clear-env --timeout 5 -- "$runtime_root/build/multicast.elf"
+xcrun clang --target=aarch64-linux-gnu -O1 -ffreestanding -fno-stack-protector \
+  -Wall -Wextra -Werror -c "$runtime_root/probes/timerfd-rearm.c" \
+  -o "$runtime_root/build/timerfd-rearm.o"
+"$task_linker" -e _start -z max-page-size=65536 \
+  "$runtime_root/build/timerfd-rearm.o" -o "$runtime_root/build/timerfd-rearm.elf"
+"$elfuse" --no-rosetta --clear-env --timeout 10 -- "$runtime_root/build/timerfd-rearm.elf"
+xcrun clang --target=aarch64-linux-gnu -O1 -ffreestanding -fno-stack-protector \
+  -Wall -Wextra -Werror -c "$runtime_root/probes/epoll-rearm.c" \
+  -o "$runtime_root/build/epoll-rearm.o"
+"$task_linker" -e _start -z max-page-size=65536 \
+  "$runtime_root/build/epoll-rearm.o" -o "$runtime_root/build/epoll-rearm.elf"
+"$elfuse" --no-rosetta --clear-env --timeout 5 -- "$runtime_root/build/epoll-rearm.elf"

@@ -285,7 +285,7 @@ index 1f82b0c..618c203 100644
          if (sysroot_create_mount(sysroot_path, &sysroot_mount) < 0) {
              log_error("failed to provision case-sensitive sysroot at %s: %s",
 diff --git a/src/runtime/futex.c b/src/runtime/futex.c
-index 705914e..3fcb914 100644
+index 705914e..038d4e7 100644
 --- a/src/runtime/futex.c
 +++ b/src/runtime/futex.c
 @@ -84,6 +84,13 @@ static _Atomic int futex_interrupt_requested = 0;
@@ -302,7 +302,15 @@ index 705914e..3fcb914 100644
  
  /* Strips the FUTEX_PRIVATE_FLAG (0x80) and FUTEX_CLOCK_REALTIME bits so the
   * dispatch switch sees only the base operation. Emulation doesn't differentiate
-@@ -658,13 +665,15 @@ static int linux_timespec_is_valid(const linux_timespec_t *lts)
+@@ -195,6 +202,7 @@ _Static_assert(FUTEX_HASH_MULT == 0x9E3779B97F4A7C15ULL,
+ typedef struct futex_waiter {
+     uint64_t uaddr;            /* Guest VA being waited on */
+     uint32_t bitset;           /* For WAIT_BITSET matching */
++    uint32_t pi_tid;           /* Nonzero for a PI ownership handoff */
+     pthread_cond_t cond;       /* Signalled by WAKE to unblock this waiter */
+     _Atomic int woken;         /* Set to 1 by WAKE before signalling */
+     struct futex_waiter *next; /* Next waiter in same bucket */
+@@ -658,13 +666,15 @@ static int linux_timespec_is_valid(const linux_timespec_t *lts)
  
  /* Convert a Linux guest timespec to an absolute struct timespec deadline. For
   * FUTEX_WAIT (relative timeout), adds the duration to the current time. For
@@ -320,7 +328,7 @@ index 705914e..3fcb914 100644
                                 struct timespec *out)
  {
      linux_timespec_t lts;
-@@ -673,7 +682,14 @@ static int futex_make_deadline(guest_t *g,
+@@ -673,7 +683,14 @@ static int futex_make_deadline(guest_t *g,
      if (!linux_timespec_is_valid(&lts))
          return -2;
  
@@ -336,7 +344,7 @@ index 705914e..3fcb914 100644
          out->tv_sec = (time_t) lts.tv_sec;
          out->tv_nsec = (long) lts.tv_nsec;
      } else {
-@@ -870,7 +886,7 @@ static int64_t futex_os_sync_wait(guest_t *g,
+@@ -870,7 +887,7 @@ static int64_t futex_os_sync_wait(guest_t *g,
      struct timespec deadline;
      if (has_timeout) {
          int rc =
@@ -345,7 +353,7 @@ index 705914e..3fcb914 100644
          if (rc == -1)
              return -LINUX_EFAULT;
          if (rc == -2)
-@@ -1078,7 +1094,7 @@ static int64_t futex_wait_inner(unsigned *pub_bucket_out,
+@@ -1078,7 +1095,7 @@ static int64_t futex_wait_inner(unsigned *pub_bucket_out,
                                  uint32_t expected,
                                  uint64_t timeout_gva,
                                  uint32_t bitset,
@@ -354,7 +362,7 @@ index 705914e..3fcb914 100644
  {
      if (bitset == 0)
          return -LINUX_EINVAL;
-@@ -1092,7 +1108,7 @@ static int64_t futex_wait_inner(unsigned *pub_bucket_out,
+@@ -1092,7 +1109,7 @@ static int64_t futex_wait_inner(unsigned *pub_bucket_out,
      bool has_timeout = (timeout_gva != 0);
      struct timespec deadline;
      if (has_timeout) {
@@ -363,7 +371,7 @@ index 705914e..3fcb914 100644
          if (rc == -1)
              return -LINUX_EFAULT;
          if (rc == -2)
-@@ -1283,7 +1299,7 @@ static int64_t futex_wait_inner(unsigned *pub_bucket_out,
+@@ -1283,7 +1300,7 @@ static int64_t futex_wait_inner(unsigned *pub_bucket_out,
       * FUTEX_WAIT_BITSET is absolute and re-derives the same instant, so it
       * stays restartable. See syscall_restart_forbid.
       */
@@ -372,7 +380,7 @@ index 705914e..3fcb914 100644
          syscall_restart_forbid();
      return ret;
  }
-@@ -1312,14 +1328,14 @@ static int64_t futex_wait(guest_t *g,
+@@ -1312,14 +1329,14 @@ static int64_t futex_wait(guest_t *g,
                            uint32_t expected,
                            uint64_t timeout_gva,
                            uint32_t bitset,
@@ -389,7 +397,16 @@ index 705914e..3fcb914 100644
      shim_globals_futex_waiters_add(g, pub, -1);
      return rc;
  }
-@@ -1822,7 +1838,7 @@ static int64_t futex_lock_pi_inner(guest_t *g,
+@@ -1801,7 +1818,7 @@ static int64_t futex_wake_op(guest_t *g,
+  * with the uncontended userspace CAS(TID->0) path.
+  *
+  * Flow: try CAS(0->TID). If held by another thread, set WAITERS bit via CAS,
+- * then block. On wakeup, retry acquisition.
++ * then block. UNLOCK_PI transfers ownership before waking the selected waiter.
+  */
+ static int64_t futex_lock_pi_inner(guest_t *g,
+                                    uint64_t uaddr,
+@@ -1822,7 +1839,7 @@ static int64_t futex_lock_pi_inner(guest_t *g,
      struct timespec deadline;
      if (has_timeout) {
          int rc =
@@ -398,7 +415,157 @@ index 705914e..3fcb914 100644
          if (rc == -1)
              return -LINUX_EFAULT;
          if (rc == -2)
-@@ -2206,7 +2222,7 @@ int64_t sys_futex(guest_t *g,
+@@ -1899,12 +1916,25 @@ static int64_t futex_lock_pi_inner(guest_t *g,
+         /* Enqueue and block */
+         pthread_mutex_lock(&b->lock);
+ 
+-        /* Double-check under bucket lock: owner may have released and called
+-         * UNLOCK_PI between the current WAITERS set and lock.
++        /* Re-establish WAITERS while holding the queue lock. An unlock and
++         * fresh userspace acquisition can replace the owner after our first
++         * mark above. Enqueueing behind that unmarked owner would let its
++         * userspace unlock bypass the sleeping queue.
+          */
+-        if (!futex_word_load(word, &cur)) {
+-            pthread_mutex_unlock(&b->lock);
+-            return -LINUX_EFAULT;
++        for (;;) {
++            if (!futex_word_load(word, &cur)) {
++                pthread_mutex_unlock(&b->lock);
++                return -LINUX_EFAULT;
++            }
++            if (futex_pi_unowned(cur) || futex_pi_has_waiters(cur))
++                break;
++            bool marked;
++            if (!futex_word_cas(word, &cur, futex_pi_set_waiters(cur), &marked)) {
++                pthread_mutex_unlock(&b->lock);
++                return -LINUX_EFAULT;
++            }
++            if (marked)
++                break;
+         }
+         if (futex_pi_unowned(cur)) {
+             pthread_mutex_unlock(&b->lock);
+@@ -1921,6 +1951,7 @@ static int64_t futex_lock_pi_inner(guest_t *g,
+         futex_waiter_t waiter = {
+             .uaddr = uaddr,
+             .bitset = FUTEX_BITSET_MATCH_ANY,
++            .pi_tid = tid,
+             .woken = 0,
+             .next = b->head,
+             .pub_bucket = idx,
+@@ -1986,10 +2017,10 @@ static int64_t futex_lock_pi_inner(guest_t *g,
+                             break;
+                         }
+                     }
+-                    pthread_mutex_unlock(&b->lock);
+-                    pthread_cond_destroy(&waiter.cond);
+                     if (!has_waiters)
+                         futex_clear_waiters_bit(word);
++                    pthread_mutex_unlock(&b->lock);
++                    pthread_cond_destroy(&waiter.cond);
+                     return -LINUX_ETIMEDOUT;
+                 }
+             } else {
+@@ -2071,11 +2102,14 @@ static int64_t futex_lock_pi_inner(guest_t *g,
+             continue;
+         }
+ 
+-        /* Woken: retry acquisition. The outer loop re-reads the lock word and
+-         * retries CAS(0->TID). If FUTEX_WAITERS (bit 31) is still set by other
+-         * waiters, CAS(0->TID) will fail since the word is non-zero; the loop
+-         * will then see the WAITERS bit and handle it appropriately.
++        /* UNLOCK_PI transfers ownership before waking. Do not retry CAS from
++         * zero: that would treat our own granted lock as a self-deadlock.
+          */
++        uint32_t granted;
++        if (!futex_word_load(word, &granted))
++            return -LINUX_EFAULT;
++        if (futex_pi_owner_tid(granted) == tid)
++            return 0;
+     }
+ }
+ 
+@@ -2119,11 +2153,9 @@ static int64_t futex_trylock_pi(guest_t *g, uint64_t uaddr)
+     return -LINUX_EAGAIN; /* Lock held, cannot acquire */
+ }
+ 
+-/* FUTEX_UNLOCK_PI: Release the PI lock at uaddr and wake one waiter.
+- *
+- * Called by the lock owner when FUTEX_WAITERS is set (slow unlock path).
+- * Atomically clear the word to 0 (releasing the lock + clearing WAITERS), then
+- * wake one blocked waiter so it can retry CAS(0->TID) acquisition.
++/* FUTEX_UNLOCK_PI: transfer ownership to a queued waiter, or clear an empty
++ * lock. Clearing the word before waking loses the remaining waiters: the
++ * winner acquires without WAITERS and subsequently unlocks in userspace.
+  */
+ static int64_t futex_unlock_pi(guest_t *g, uint64_t uaddr)
+ {
+@@ -2155,33 +2187,44 @@ static int64_t futex_unlock_pi(guest_t *g, uint64_t uaddr)
+     if (!word)
+         return -LINUX_EFAULT;
+ 
+-    /* Atomically release: set word to 0 (clear TID + WAITERS flag). Use CAS
+-     * loop in case another thread is concurrently setting WAITERS.
++    unsigned idx = futex_hash(uaddr);
++    futex_bucket_t *b = &buckets[idx];
++    pthread_mutex_lock(&b->lock);
++
++    /* Oldest waiter first among equal-priority threads. Priority boosting is
++     * still not implemented, but ownership and the WAITERS contract are.
+      */
++    futex_waiter_t **next_owner = NULL;
++    for (futex_waiter_t **pp = &b->head; *pp; pp = &(*pp)->next) {
++        if ((*pp)->uaddr != uaddr)
++            continue;
++        if ((*pp)->pi_tid == 0) {
++            pthread_mutex_unlock(&b->lock);
++            return -LINUX_EINVAL;
++        }
++        next_owner = pp;
++    }
++    uint32_t desired = next_owner ? ((*next_owner)->pi_tid | FUTEX_PI_WAITERS) : 0;
+     for (;;) {
+         uint32_t v;
+         bool released;
+-        if (!futex_word_load(word, &v) ||
+-            !futex_word_cas(word, &v, 0, &released))
++        if (!futex_word_load(word, &v)) {
++            pthread_mutex_unlock(&b->lock);
+             return -LINUX_EFAULT;
++        }
++        if (futex_pi_owner_tid(v) != tid) {
++            pthread_mutex_unlock(&b->lock);
++            return -LINUX_EPERM;
++        }
++        if (!futex_word_cas(word, &v, desired, &released)) {
++            pthread_mutex_unlock(&b->lock);
++            return -LINUX_EFAULT;
++        }
+         if (released)
+             break;
+     }
+-
+-    /* Wake one waiter so it can retry acquisition */
+-    unsigned idx = futex_hash(uaddr);
+-    futex_bucket_t *b = &buckets[idx];
+-
+-    pthread_mutex_lock(&b->lock);
+-    futex_waiter_t **pp = &b->head;
+-    while (*pp) {
+-        futex_waiter_t *w = *pp;
+-        if (w->uaddr == uaddr) {
+-            futex_wake_waiter_locked(pp);
+-            break; /* Wake exactly one */
+-        }
+-        pp = &w->next;
+-    }
++    if (next_owner)
++        futex_wake_waiter_locked(next_owner);
+     pthread_mutex_unlock(&b->lock);
+ 
+     return 0;
+@@ -2206,7 +2249,7 @@ int64_t sys_futex(guest_t *g,
              return futex_os_sync_wait_counted(g, uaddr, val, timeout_gva);
  #endif
          return futex_wait(g, uaddr, val, timeout_gva, FUTEX_BITSET_MATCH_ANY,
@@ -407,7 +574,7 @@ index 705914e..3fcb914 100644
  
      case FUTEX_WAKE:
          return futex_wake(g, uaddr, val, FUTEX_BITSET_MATCH_ANY);
-@@ -2238,7 +2254,9 @@ int64_t sys_futex(guest_t *g,
+@@ -2238,7 +2281,9 @@ int64_t sys_futex(guest_t *g,
           * trade. tests/bench-futex.c keeps the row (BENCH_FUTEX_HANDOFF_BITSET)
           * so the next attempt starts from a measurement rather than the idea.
           */
@@ -418,6 +585,14 @@ index 705914e..3fcb914 100644
  
      case FUTEX_WAKE_BITSET:
          return futex_wake(g, uaddr, val, val3);
+@@ -2260,6 +2305,7 @@ int64_t sys_futex(guest_t *g,
+     }
+ }
+ 
++
+ int futex_wake_one(guest_t *g, uint64_t uaddr)
+ {
+     return (int) futex_wake(g, uaddr, 1, FUTEX_BITSET_MATCH_ANY);
 diff --git a/src/runtime/procemu.c b/src/runtime/procemu.c
 index fa5b501..fb532c7 100644
 --- a/src/runtime/procemu.c
@@ -478,6 +653,42 @@ index fa5b501..fb532c7 100644
      /* /dev/bus/usb and /sys/bus/usb entries are real dirs/files, never
       * symlinks; answer EINVAL for existing paths rather than falling through to
       * the host (where /sys does not exist and the error would be ENOENT).
+diff --git a/src/syscall/fd.c b/src/syscall/fd.c
+index b905da4..02b691b 100644
+--- a/src/syscall/fd.c
++++ b/src/syscall/fd.c
+@@ -309,7 +309,7 @@ int64_t sys_timerfd_settime(guest_t *g,
+      * nanosecond conversion.
+      */
+     int64_t value_ns = timespec_to_ns_sat(its.it_value_sec, its.it_value_nsec);
+-    int64_t value_us = value_ns / 1000;
++    int64_t value_us = value_ns / 1000 + (value_ns % 1000 != 0);
+     int64_t interval_ns =
+         timespec_to_ns_sat(its.it_interval_sec, its.it_interval_nsec);
+ 
+@@ -336,6 +336,22 @@ int64_t sys_timerfd_settime(guest_t *g,
+         timerfd_state[slot].armed = false;
+         timerfd_state[slot].expirations = 0;
+     } else {
++        /* Linux timerfd_settime resets unread expirations. EV_ADD updates a
++         * pending kqueue timer without clearing its old readiness, so an
++         * epoll reactor that rearms instead of reading would spin forever.
++         * Delete the previous timer and drain its queue before registering
++         * the new deadline. sfd_lock excludes concurrent settime/read calls.
++         */
++        struct kevent previous;
++        EV_SET(&previous, 1, EVFILT_TIMER, EV_DELETE, 0, 0, NULL);
++        if (kevent(kq, &previous, 1, NULL, 0, NULL) < 0 && errno != ENOENT) {
++            ret = linux_errno();
++            goto unlock;
++        }
++        struct timespec ts_zero = {0, 0};
++        while (kevent(kq, NULL, 0, &previous, 1, &ts_zero) > 0)
++            ;
++
+         /* Arm timer. Always use EV_ONESHOT: for repeating timers where initial
+          * value != interval, kqueue would repeat at the wrong period (initial
+          * instead of interval). timerfd_read re-arms with the interval after
 diff --git a/src/syscall/linux-wire.h b/src/syscall/linux-wire.h
 index 8c767eb..12f8d28 100644
 --- a/src/syscall/linux-wire.h

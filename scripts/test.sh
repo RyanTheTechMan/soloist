@@ -8,4 +8,5 @@ xcrun clang -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined \
   "$elfuse_root/src/core/text-integrity.c" -o "$runtime_root/build/text-integrity-test"
 "$runtime_root/build/text-integrity-test"
 bash "$runtime_root/scripts/probe-hvf.sh"
+python3 "$runtime_root/scripts/test-pi-mutex.py"
 python3 "$runtime_root/scripts/verify-startup.py"

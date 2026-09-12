@@ -87,9 +87,13 @@ def main():
     parser.add_argument("--seconds", type=int, default=900)
     parser.add_argument("--soloist", help="Official Linux ARM64 executable (never copied into source)")
     parser.add_argument("--api-key-file", help="Owner-only file containing your Soloist API key")
+    parser.add_argument("--audio-latency-ms", type=int, default=0,
+                        help="PulseAudio buffer target, 20..2000 ms; 0 uses the engine default")
     args = parser.parse_args()
     if not 30 <= args.seconds <= 1800:
         parser.error("duration must be 30..1800 seconds")
+    if args.audio_latency_ms != 0 and not 20 <= args.audio_latency_ms <= 2000:
+        parser.error("audio latency must be 0 or 20..2000 ms")
     state = ROOT / "state"
     cache = ROOT / "cache"
     for path in (state, cache):
@@ -118,7 +122,7 @@ def main():
         pulse_hint.write_text(str(pulse_root) + "\n")
         pulse_hint.chmod(0o600)
         command = [str(RUNTIME),
-                   "--no-rosetta", "--clear-env", "--timeout", str(args.seconds),
+                   "--no-rosetta", "--clear-env", "--timeout", "10",
                    "--sysroot", str(sysroot),
                    "--append-arg-file", str(key_path),
                    "--env", "PULSE_SERVER=unix:" + str(pulse_root / "native"),
@@ -128,14 +132,20 @@ def main():
                    "-n", "Soloist macOS Lab", "-D", str(state), "-C", str(cache),
                    "-z", "100", "-w", "127.0.0.1:0", "-i", "5", "-v", "-k"]
         environment = {"PATH": os.defpath, "ELFUSE_VERIFY_TEXT": "1"}
+        if args.audio_latency_ms:
+            # A supported libpulse setting, not an engine hook or code patch.
+            command[command.index("--"):command.index("--")] = [
+                "--env", "PULSE_LATENCY_MSEC=" + str(args.audio_latency_ms)]
+        print("STARTUP: audio buffer target", args.audio_latency_ms or "engine default", flush=True)
         process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, start_new_session=True)
         pid_file = state / "receiver.pid"
         pid_file.write_text(str(process.pid) + "\n")
         pid_file.chmod(0o600)
         print("RECEIVER: starting Soloist macOS Lab; duration", args.seconds, "seconds", flush=True)
-        # Let elfuse's own timeout unwind the VM and perform the exit integrity
-        # check. The parent deadline is only a backup for a stuck runtime.
+        # elfuse --timeout is a stalled-vCPU watchdog, not a wall-clock limit.
+        # This parent enforces the receiver duration. Host termination currently
+        # does not perform an authenticated post-exit integrity comparison.
         deadline = time.monotonic() + args.seconds + 10
         pending = b""
         timed_out = False

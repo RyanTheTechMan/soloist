@@ -20,11 +20,25 @@ Authenticated playback and song skipping have worked with Soloist 1.3.8.36.
 The engine reported FLAC at 44.1 kHz and produced audible, non-silent output.
 Source bit depth and end-to-end bit-perfect output remain unverified.
 
-**This is a development preview, not a stable one-click release.** A later
-playback run developed approximately one CPU core of sustained usage and an
-unresponsive local API. Native audio buffering also measured about 1.9 seconds.
-These are outstanding bugs. AI DJ, extended reconnect reliability and future
-Soloist versions are not validated. See [validation notes](docs/VALIDATION.md).
+**This is a development preview, not a stable one-click release.** The timer
+rearm busy loop and a PI-mutex lost-wakeup bug behind pause/API stalls now have
+generic runtime fixes and account-free regression tests. Soloist completed
+two consecutive 30-cycle pause/resume runs with twelve skips after the mutex fix.
+This does not establish that every hang is resolved. Native audio buffering
+still measured about 1.9 seconds with the engine default. The user has also
+confirmed seeking, volume controls and AI DJ working through Spotify Connect.
+Starting/controlling DJ through a future client's own API, extended reconnect
+reliability and future Soloist versions remain unvalidated.
+See [validation notes](docs/VALIDATION.md).
+
+### Future client portability
+
+The playback/control interface is separate from the macOS execution runtime.
+Client-side models and API handling can be reused for future mobile clients,
+but sharing ARM64 does not make this Hypervisor.framework runtime an iOS engine.
+On-device iOS playback needs a separately supported execution/playback route.
+Remote control of a desktop receiver is a different feature from local iPhone
+playback; do not expose the unauthenticated local WebSocket endpoint to support it.
 
 ## Set up
 
@@ -72,6 +86,15 @@ The receiver runs for 15 minutes by default, then shuts down; Ctrl-C also stops
 it. Use `--seconds 1800` for a 30-minute test. This deliberate bounded mode
 remains while stability is being investigated. No login item or background
 system service is installed.
+
+`--audio-latency-ms 100` requests a smaller buffer through libpulse's supported
+environment setting. After the PI-mutex fix, it passed 30 pause/resume cycles
+with six skips and non-silent FLAC output. The measured stream buffer was
+28–272 ms across the short tests, versus roughly 1.7 seconds with the engine
+default on this Mac.
+It remains optional pending longer underrun/device testing. The default `0`
+leaves the engine's buffer choice unchanged. A requested buffer target is not
+a guaranteed buffer size or physical audible-latency measurement.
 
 Private executable/key paths are saved in ignored `state/installation.json`.
 Subsequent runs need only `python3 scripts/run-receiver.py`. To change the
@@ -134,6 +157,9 @@ bash scripts/test.sh
 make -C vendor/elfuse test-multi-vcpu test-elf-headers-host
 python3 scripts/prepare-sysroot.py --audio --network-test
 python3 scripts/test-https.py
+python3 scripts/test-pulse-lifecycle.py
+python3 scripts/test-pi-mutex.py
+python3 scripts/test-playback-cycles.py
 ```
 
 Fixture tests additionally need an ARM64 Rust toolchain's bundled `ld.lld`
@@ -145,6 +171,23 @@ With playback active, `python3 scripts/verify-audio.py` measures the private
 audio server's output monitor without a microphone or saving audio. The optional
 `probe-audio-library.sh` checks Linux PulseAudio loading and a silent write.
 `probe-direct.sh` is a historical owned-code x18 diagnostic, not a Soloist loader.
+
+`verify-stability.py --seconds 600` samples the running receiver's API and interval
+CPU use, stopping after three consecutive API failures. The active control test
+`verify-control-latency.py --exercise-volume-to-zero` briefly mutes and restores
+the original volume; `--exercise-pause` pauses then requests resume. These measure
+the private monitor, not a microphone or physical-device latency. A suspended
+monitor can stop delivering PCM, which is an inconclusive silence measurement,
+not a measured response time. JSON results remain in ignored `build/`.
+
+`verify-playback-cycles.py --exercise-playback --cycles 30` actively tests
+pause/resume and position movement, skipping every fifth cycle. It leaves
+playback running on success and does not restore the previous queue position.
+Use `--skip-every 0` to disable skips and `--label trial-name` to keep separate
+numeric reports. Command acknowledgement, settled state and audio output are
+separate evidence; this test does not measure codec or source bit depth.
+`--pause-seconds 30` exercises output suspension, and `--deactivate-every 1`
+also tests relinquishing/reclaiming the active Connect device each cycle.
 
 Normal setup uses the smaller `sysroot-packages.json`; optional HTTPS tests use
 `sysroot-network-test-packages.json`. Packages are fetched over HTTPS and verified
