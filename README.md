@@ -27,6 +27,9 @@ two consecutive 30-cycle pause/resume runs with twelve skips after the mutex fix
 This does not establish that every hang is resolved. Native audio buffering
 still measured about 1.9 seconds with the engine default. The user has also
 confirmed seeking, volume controls and AI DJ working through Spotify Connect.
+Graceful authenticated shutdown now completes the executable-byte exit check.
+The supervisor supports unbounded operation and bounded crash/API recovery;
+real Wi-Fi, sleep/wake and output-device recovery tests are still pending.
 Starting/controlling DJ through a future client's own API, extended reconnect
 reliability and future Soloist versions remain unvalidated.
 See [validation notes](docs/VALIDATION.md).
@@ -64,10 +67,12 @@ Requirements:
 3. Open a terminal in this repository and run:
 
 ```sh
-python3 scripts/setup.py --install-deps \
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python scripts/setup.py --install-deps \
   --soloist "/path/to/extracted/soloist" \
   --api-key-file "/path/to/soloist.api"
-python3 scripts/run-receiver.py
+.venv/bin/python scripts/run-receiver.py
 ```
 
 Replace the two paths. Setup installs missing Homebrew `binutils`,
@@ -82,10 +87,19 @@ authentication, then play a normal song. Permit local-network access if macOS
 asks. Stored credentials support later sessions. Initial pairing still needs
 Spotify's supported authentication flow; this layer does not replace it.
 
-The receiver runs for 15 minutes by default, then shuts down; Ctrl-C also stops
-it. Use `--seconds 1800` for a 30-minute test. This deliberate bounded mode
-remains while stability is being investigated. No login item or background
-system service is installed.
+The receiver runs until stopped by default. Ctrl-C requests normal Linux guest
+shutdown, gives it 15 seconds to finish, then force-stops it if necessary.
+Use `--seconds 1800` for a 30-minute run (30..86400 seconds are accepted).
+No login item or background system service is installed.
+
+Unexpected exits and three consecutive local API/audio-server health failures
+can restart the receiver and its private audio server, using retained session
+data. Retries are limited to three per launch with backoff; `--restart-limit 0`
+disables them. Clean exits, explicit stop, duration completion and expired
+Soloist builds do not trigger retries. Recovery does not issue activate/play
+commands or reclaim playback from another device. Internet loss alone is not
+treated as a local API failure; Soloist handles its own network reconnection.
+This is implemented recovery policy, not proof that all real interruptions work.
 
 `--audio-latency-ms 100` requests a smaller buffer through libpulse's supported
 environment setting. After the PI-mutex fix, it passed 30 pause/resume cycles
@@ -97,7 +111,7 @@ leaves the engine's buffer choice unchanged. A requested buffer target is not
 a guaranteed buffer size or physical audible-latency measurement.
 
 Private executable/key paths are saved in ignored `state/installation.json`.
-Subsequent runs need only `python3 scripts/run-receiver.py`. To change the
+Subsequent runs need only `.venv/bin/python scripts/run-receiver.py`. To change the
 official executable, rerun setup with its new path. Compatibility with a new
 version must still be tested; no version-specific binary patch is required.
 
@@ -115,11 +129,22 @@ python3 -m venv .venv
 .venv/bin/python scripts/control.py play
 .venv/bin/python scripts/control.py skip_next
 .venv/bin/python scripts/control.py pause
+.venv/bin/python scripts/control.py seek --position-ms 30000
+.venv/bin/python scripts/control.py get_queue --limit 10
+.venv/bin/python scripts/control.py set_shuffle --enabled on
+.venv/bin/python scripts/control.py set_repeat_context --enabled off
+.venv/bin/python scripts/capabilities.py
 ```
 
 Run these in another terminal while the receiver is running. A command being
 accepted is not proof that playback started. The receiver and observation tool
 report bounded status fields without account identity or track metadata.
+All documented query/control commands are now available from `control.py`.
+Inputs are validated, login readiness is awaited, and mutations are never
+silently retried after a lost connection. Queue output includes counts only.
+This does not add undocumented DJ-init, DJ-next-segment or mixing commands.
+See [release readiness](docs/RELEASE_READINESS.md) for the remaining client/API
+and packaging work.
 
 ## Security and packaging boundaries
 
@@ -173,7 +198,13 @@ audio server's output monitor without a microphone or saving audio. The optional
 `probe-direct.sh` is a historical owned-code x18 diagnostic, not a Soloist loader.
 
 `verify-stability.py --seconds 600` samples the running receiver's API and interval
-CPU use, stopping after three consecutive API failures. The active control test
+CPU, resident memory and private audio-buffer state, stopping after three
+consecutive API failures. `--seconds 7200 --label soak-01` prepares a two-hour
+test; do not call it passed until it actually finishes. `--allow-recovery` keeps
+observing across receiver restarts and API failures for manual interruption tests.
+Choose a new label for each run; a numeric-only JSONL journal preserves completed
+samples if the test is interrupted. These are snapshots, not continuous underrun
+or acoustic-dropout detection. The active control test
 `verify-control-latency.py --exercise-volume-to-zero` briefly mutes and restores
 the original volume; `--exercise-pause` pauses then requests resume. These measure
 the private monitor, not a microphone or physical-device latency. A suspended

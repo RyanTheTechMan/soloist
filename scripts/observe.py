@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 import time
 import websockets
+from client_api import FIELDS
 
 STATE = Path(__file__).resolve().parents[1] / "state"
 
@@ -15,9 +16,19 @@ def safe_event(event):
         return None
     kind = event.get("type")
     if kind not in ("auth_state", "playback_state", "playback_changed",
-                    "position_sync", "command_result", "error"):
+                    "position_sync", "command_result", "error", "queue_changed",
+                    "volume_changed", "device_changed", "options_changed"):
         return None
     result = {"type": kind}
+    if kind == "command_result" and isinstance(event.get("command"), str) and event["command"] in FIELDS:
+        result["command"] = event["command"]
+    volume = event.get("volume")
+    if type(volume) in (int, float) and 0 <= volume <= 100:
+        result["volume"] = volume
+    if kind == "queue_changed":
+        for key in ("previous", "upcoming"):
+            if isinstance(event.get(key), list):
+                result[key + "_count"] = len(event[key])
     for key in ("logged_in", "is_active", "success"):
         if isinstance(event.get(key), bool):
             result[key] = event[key]

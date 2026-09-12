@@ -1139,3 +1139,101 @@ index 0000000..a1b3067
 +                        const char *path);
 +bool text_integrity_verify(const text_integrity_t *check, const guest_t *g);
 +void text_integrity_destroy(text_integrity_t *check);
+diff --git a/src/syscall/proc.c b/src/syscall/proc.c
+index f93d2cb..8629c0f 100644
+--- a/src/syscall/proc.c
++++ b/src/syscall/proc.c
+@@ -3025,6 +3025,36 @@ static _Atomic uint64_t g_vcpu_progress;
+ static pthread_t g_preempt_thread;
+ static bool g_preempt_started;
+ 
++/* Optional host lifecycle bridge. Keep these signals off vCPU threads just
++ * like the watchdog. Queue before guest startup, and stop touching guest state
++ * before teardown. This is ordinary Linux signal delivery, not a guest hook.
++ */
++static bool g_forward_termination;
++static pthread_mutex_t host_signal_lock = PTHREAD_MUTEX_INITIALIZER;
++static unsigned pending_host_signals;
++static bool host_signal_ready;
++
++static void host_signal_drain_locked(void)
++{
++    if (!host_signal_ready)
++        return;
++    if (pending_host_signals & 1)
++        signal_queue(LINUX_SIGINT);
++    if (pending_host_signals & 2)
++        signal_queue(LINUX_SIGTERM);
++    pending_host_signals = 0;
++}
++
++static void host_signal_set_ready(bool ready)
++{
++    if (!g_forward_termination)
++        return;
++    pthread_mutex_lock(&host_signal_lock);
++    host_signal_ready = ready;
++    host_signal_drain_locked();
++    pthread_mutex_unlock(&host_signal_lock);
++}
++
+ static void drain_external_guest_signal(void);
+ 
+ /* Dedicated sigwait consumer. SIGUSR2/SIGALRM are blocked on every other thread
+@@ -3041,11 +3071,22 @@ static void *preempt_thread_main(void *arg)
+     sigemptyset(&wait_set);
+     sigaddset(&wait_set, SIGUSR2);
+     sigaddset(&wait_set, SIGALRM);
++    if (g_forward_termination) {
++        sigaddset(&wait_set, SIGINT);
++        sigaddset(&wait_set, SIGTERM);
++    }
+ 
+     for (;;) {
+         int sig = 0;
+         if (sigwait(&wait_set, &sig) != 0)
+             continue;
++        if (sig == SIGINT || sig == SIGTERM) {
++            pthread_mutex_lock(&host_signal_lock);
++            pending_host_signals |= sig == SIGINT ? 1U : 2U;
++            host_signal_drain_locked();
++            pthread_mutex_unlock(&host_signal_lock);
++            continue;
++        }
+         if (sig == SIGUSR2) {
+             atomic_store_explicit(&g_external_guest_signal, 1,
+                                   memory_order_release);
+@@ -3179,6 +3220,12 @@ int proc_preempt_init(void)
+     sigemptyset(&block);
+     sigaddset(&block, SIGUSR2);
+     sigaddset(&block, SIGALRM);
++    const char *forward = getenv("ELFUSE_FORWARD_TERMINATION");
++    g_forward_termination = forward && strcmp(forward, "1") == 0;
++    if (g_forward_termination) {
++        sigaddset(&block, SIGINT);
++        sigaddset(&block, SIGTERM);
++    }
+ 
+     /* pthread_sigmask returns the error code directly. If the block fails, vCPU
+      * threads would inherit an unblocked mask and a signal landing mid-run
+@@ -4612,7 +4659,10 @@ int vcpu_run_loop_with_hooks(hv_vcpu_t vcpu,
+      */
+     uint64_t iter = 0;
+     const int is_main = (timeout_sec > 0);
++    const bool owns_host_signals = thread_current_is_leader();
+     const char *prefix = is_main ? "elfuse" : "elfuse: worker";
++    if (owns_host_signals)
++        host_signal_set_ready(true);
+ 
+     /* Pin vCPU thread to a performance core via QoS class. On Apple Silicon,
+      * USER_INTERACTIVE maps to P-cores, avoiding E-core migration that causes
+@@ -4782,6 +4832,9 @@ int vcpu_run_loop_with_hooks(hv_vcpu_t vcpu,
+         setitimer(ITIMER_REAL, &off, NULL);
+     }
+ 
++    if (owns_host_signals)
++        host_signal_set_ready(false);
++
+     if (wait_status_out) {
+         int signal_status = signal_take_termination_wait_status();
+         *wait_status_out =

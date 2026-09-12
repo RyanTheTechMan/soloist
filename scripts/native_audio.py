@@ -8,11 +8,16 @@ import tempfile
 import time
 
 
+class AudioEnvironment(dict):
+    def alive(self):
+        return self.process.poll() is None
+
+
 @contextmanager
 def native_audio():
     with tempfile.TemporaryDirectory(prefix="soloist-pulse-", dir="/tmp") as directory:
         root = Path(directory)
-        environment = os.environ.copy()
+        environment = AudioEnvironment(PATH=os.defpath)
         environment.update(PULSE_RUNTIME_PATH=directory, PULSE_STATE_PATH=directory,
                            PULSE_COOKIE=str(root / "cookie"),
                            PULSE_SERVER="unix:" + str(root / "native"))
@@ -25,6 +30,7 @@ def native_audio():
                    "-L", "module-suspend-on-idle timeout=2"]
         with subprocess.Popen(command, env=environment, stdout=subprocess.DEVNULL,
                               stderr=subprocess.DEVNULL) as audio:
+            environment.process = audio
             try:
                 for _ in range(200):
                     if audio.poll() is not None:

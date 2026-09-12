@@ -176,3 +176,37 @@ The user subsequently confirmed play, pause, skipping, seeking and volume
 control working well, and reported AI DJ also working well. This is user-observed
 AI DJ operation through Spotify Connect, not an automated DJ test or proof that
 the documented local API can initiate DJ and request the next DJ segment.
+
+## Follow-up: graceful lifecycle and recovery instrumentation
+
+- Optional host SIGINT/SIGTERM forwarding now uses the existing non-vCPU
+  sigwait thread and normal Linux guest signal delivery. Signals are held until
+  the guest is initialized; guest access is disabled before teardown. Soloist
+  executable instructions remain untouched.
+- Three owned Linux cases passed: caught SIGTERM, caught SIGINT and default
+  SIGTERM termination. Each completed the post-exit executable comparison.
+- A real 30-second run restored the stored account session and connected its
+  cloud WebSocket, then stopped with exit code 0 without forced termination.
+  Both preflight and exit comparisons passed for 20,478,304 executable bytes.
+  This closes the prior authenticated post-exit-check gap for this run, not
+  continuous monitoring or coverage of later-loaded libraries.
+- Seven offline supervisor tests passed, including normal exit, requested stop,
+  graceful duration completion, bounded kill fallback, three-strike health
+  recovery, resetting the failure streak and bounded/no-retry exit policy.
+- Subsequent unbounded receiver startup restored the saved session. Explicit
+  local activation/play produced non-silent private output: 132,642 stereo
+  frames at 44,100 Hz, float32, buffer 344,979 us and sink 170,666 us. No
+  microphone or saved music was used. Source bit depth remains unverified.
+- Five local client-helper tests and six existing playback-harness tests passed.
+  All documented command shapes are accepted by validation; invalid values,
+  unsupported commands, premature login and ambiguous mutation retries are
+  covered. This is not live verification of every command.
+- Four offline receiver tests passed: explicit health-query response with a
+  logged-out account, non-loopback rejection, diagnostic filtering and atomic
+  owner-only status files. Live state and queue queries also returned successfully.
+- The exported patch applied to a fresh pinned-source archive, compiled and
+  passed the owned PI fixture. The focused suite, 5/5 multiple-vCPU checks and
+  54/54 ELF-header checks passed after the lifecycle change.
+- The recovery monitor now records numeric API/CPU/RSS/audio-buffer snapshots
+  across restarts. Real Wi-Fi, sleep/wake, output-device recovery and a completed
+  multi-hour soak remain pending; no success is inferred from the new harness.
