@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import time
+from paths import PULSE, PACTL, PULSE_MODULES
 
 
 class AudioEnvironment(dict):
@@ -21,7 +22,7 @@ def native_audio():
         environment.update(PULSE_RUNTIME_PATH=directory, PULSE_STATE_PATH=directory,
                            PULSE_COOKIE=str(root / "cookie"),
                            PULSE_SERVER="unix:" + str(root / "native"))
-        command = ["/opt/homebrew/opt/pulseaudio/bin/pulseaudio", "-n", "--daemonize=no",
+        command = [str(PULSE), "-p", str(PULSE_MODULES), "-n", "--daemonize=no",
                    "--use-pid-file=no", "--exit-idle-time=-1", "--disallow-module-loading=yes",
                    "--log-target=stderr", "--log-level=error", "--disable-shm=yes",
                    "--high-priority=no", "--realtime=no",
@@ -41,7 +42,7 @@ def native_audio():
                 else:
                     raise RuntimeError("Private audio server startup timed out")
                 for _ in range(30):
-                    result = subprocess.run(["/opt/homebrew/bin/pactl", "-f", "json", "list", "sinks"],
+                    result = subprocess.run([str(PACTL), "-f", "json", "list", "sinks"],
                                             env=environment, capture_output=True, timeout=5)
                     if result.returncode == 0 and json.loads(result.stdout or b"[]"):
                         break

@@ -1,16 +1,12 @@
 """Offline receiver health/privacy checks using an owned loopback fixture."""
 import contextlib
-import importlib.util
 import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
 import websockets
-
-spec = importlib.util.spec_from_file_location("receiver", Path(__file__).with_name("run-receiver.py"))
-receiver = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(receiver)
+import receiver
 
 
 class Tests(unittest.IsolatedAsyncioTestCase):

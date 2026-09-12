@@ -29,7 +29,8 @@ still measured about 1.9 seconds with the engine default. The user has also
 confirmed seeking, volume controls and AI DJ working through Spotify Connect.
 Graceful authenticated shutdown now completes the executable-byte exit check.
 The supervisor supports unbounded operation and bounded crash/API recovery;
-real Wi-Fi, sleep/wake and output-device recovery tests are still pending.
+the user confirmed recovery after a short Wi-Fi interruption. Offline control
+mutations, sleep/wake and output-device recovery tests are still pending.
 Starting/controlling DJ through a future client's own API, extended reconnect
 reliability and future Soloist versions remain unvalidated.
 See [validation notes](docs/VALIDATION.md).
@@ -42,8 +43,26 @@ but sharing ARM64 does not make this Hypervisor.framework runtime an iOS engine.
 On-device iOS playback needs a separately supported execution/playback route.
 Remote control of a desktop receiver is a different feature from local iPhone
 playback; do not expose the unauthenticated local WebSocket endpoint to support it.
+See [mobile feasibility](docs/MOBILE_FEASIBILITY.md) for the desktop-first decision,
+Android possibilities and the separate iOS interpreter research question.
 
-## Set up
+## Standalone local package
+
+A local `.app` builder now bundles the runtime, production Linux libraries,
+private macOS audio dependencies and frozen command-line controls. End users do
+not need Homebrew, Python or a compiler. The separately supplied official Soloist
+executable and API-key file stay outside the bundle. Packaged state is isolated
+from the development receiver under Application Support.
+
+Strict signatures, payload auditing, relocation, credential-free engine startup,
+native audio startup and a bounded unpaired receiver run passed. The minimal
+AppKit launcher's graphical setup still needs completion of a macOS file-access
+permission test; do not treat this as a finished one-click release. No public
+notarization or API access-control claim is made.
+See [package build/integration instructions](docs/PACKAGING.md) and
+[local quick start](packaging/QUICKSTART.md).
+
+## Set up from source
 
 Requirements:
 
@@ -166,9 +185,9 @@ and packaging work.
   Review upstream licenses before distributing a prebuilt runtime or sysroot;
   see [third-party notices](THIRD_PARTY_NOTICES.md).
 
-Setup currently builds locally. A signed, self-contained runtime bundle that
-needs only the official executable and the user's key is the intended packaging
-direction, but is **not delivered by this source preview**.
+Source setup builds locally. The separate package builder creates a self-contained
+local preview; public distribution and graphical first-run validation remain
+unfinished. No build products or proprietary inputs belong in a source commit.
 
 ## Development and tests
 

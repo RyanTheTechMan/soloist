@@ -5,11 +5,10 @@ a transport failure: the server may already have applied it (especially skip).
 """
 import asyncio
 import json
-from pathlib import Path
 import re
 import websockets
+from paths import STATE
 
-STATE = Path(__file__).resolve().parents[1] / "state"
 QUERY_EVENTS = {"get_auth_state": "auth_state", "get_state": "playback_state",
                 "get_queue": "queue_changed"}
 FIELDS = {"get_auth_state": (), "get_state": (), "get_queue": ("limit",),

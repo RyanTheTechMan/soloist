@@ -15,8 +15,11 @@ tracks unfinished work; implementing a test harness does not pass its tests.
   pass. Real crash/audio-server recovery and adverse timing remain to validate.
 - Stored session: restored on the subsequent live receiver launch; local activate
   and play succeeded, followed by non-silent private output samples.
-- Real Wi-Fi, sleep/wake and output-device changes: pending user-coordinated tests.
-  Never toggle the user's connectivity or sleep the computer without coordination.
+- Short Wi-Fi interruption/reconnection: user reports uninterrupted current-song
+  audio and automatic restoration of Spotify's player information on reconnection.
+  Local command mutations during the outage, prolonged outages, sleep/wake and
+  output-device changes remain pending. Never toggle connectivity or sleep the
+  computer without coordination.
 
 ## Longer audio tests
 
@@ -33,6 +36,9 @@ The command helper covers all currently documented local commands, waits for
 login, validates field types and does not retry ambiguous mutations. Offline
 tests cover validation, acknowledgement matching, readiness and private output.
 Individual live tests for queue insertion, repeat and shuffle remain pending.
+The future same-Mac client must retain local control and current-item state when
+Spotify is unreachable. [Local-control requirements](LOCAL_CONTROL.md) separate
+this design requirement from offline-command behavior not yet verified.
 
 AI DJ through Spotify Connect is user-confirmed. As of this checkpoint, the
 [official WebSocket command reference](https://developer.spotify.com/documentation/soloist/reference/websocket-api)
@@ -42,14 +48,18 @@ concrete local-API gap, not evidence that Soloist's internal player cannot do DJ
 Own-client DJ initiation and transition control need separate working prototypes;
 do not invent command names or claim a regular skip is a DJ-segment command.
 
-## Distribution and security (not yet delivered)
+## Distribution and security
 
-- Build a relocatable bundle containing the compatibility runtime, production
-  library sysroot and private macOS playback dependencies. Keep Soloist, keys,
-  saved sessions, caches and test recordings outside it.
-- Provide a minimal setup/launch experience using the separately downloaded
-  official ARM64 executable and owner-only API-key file. End users should not
-  need Homebrew, compilers or Python; the current source preview still does.
+- Local relocatable bundle builder and audits are implemented: compatibility
+  runtime, production library sysroot, frozen controls and private macOS playback
+  dependencies. Engine/key exclusion, strict signatures, relocation, engine
+  version/text integrity and native audio startup checks passed. See [packaging](PACKAGING.md).
+- A small AppKit setup/Start/Stop launcher is implemented, but graphical
+  first-run validation is incomplete: the test stalled at macOS Documents-folder
+  authorization when passing paths directly. No privacy settings were changed.
+  The file picker also left the executable unselectable in the first test.
+  Command-line setup and a 30-second unpaired receiver run passed without a
+  compiler, Python or Homebrew on PATH. No packaged authenticated playback claim.
 - Audit dependency licenses/notices and version manifest; verify fresh install
   and a later official Soloist build without executable-specific offsets.
 - Resolve local API access control. Loopback is not authentication. A proxy in
@@ -60,4 +70,6 @@ do not invent command names or claim a regular skip is a DJ-segment command.
 
 The runtime itself is macOS ARM64/HVF only. Future mobile clients can share the
 control model, but on-device iOS playback requires a different supported engine
-route; it does not inherit macOS Hypervisor.framework support.
+route; it does not inherit macOS Hypervisor.framework support. Desktop-first is
+the current priority; [mobile feasibility](MOBILE_FEASIBILITY.md) records the
+alternatives without promising support or making it a desktop release gate.

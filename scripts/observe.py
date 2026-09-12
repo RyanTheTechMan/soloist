@@ -3,12 +3,11 @@ import argparse
 import asyncio
 import json
 import math
-from pathlib import Path
 import time
 import websockets
 from client_api import FIELDS
+from paths import STATE
 
-STATE = Path(__file__).resolve().parents[1] / "state"
 
 
 def safe_event(event):

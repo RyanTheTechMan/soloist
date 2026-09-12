@@ -210,3 +210,62 @@ the documented local API can initiate DJ and request the next DJ segment.
 - The recovery monitor now records numeric API/CPU/RSS/audio-buffer snapshots
   across restarts. Real Wi-Fi, sleep/wake, output-device recovery and a completed
   multi-hour soak remain pending; no success is inferred from the new harness.
+
+## User-coordinated Wi-Fi interruption
+
+The user turned Wi-Fi off and reported that the current song remained audible,
+while the official Spotify client stopped showing the song information. Turning
+Wi-Fi back on restored the client connection, song information and player stats
+without needing to reselect the receiver. This passes that user-observed short
+Wi-Fi interruption/reconnection scenario, not prolonged offline operation.
+
+At inspection, the ongoing recovery journal contained 298 samples spanning
+1,500.7 seconds: zero local API failures, zero private audio-server failures and
+zero observed receiver restarts. These are five-second snapshots; the exact
+Wi-Fi-off interval was not marked independently. They do not prove offline
+control mutations, continuous audible output or that all network routes were
+unavailable. Pause/resume, volume and buffered seeking while Wi-Fi is off remain
+separate tests. Sleep/wake and output-device changes are still pending.
+
+The future client must preserve local control and current-item information
+independently of cloud connectivity; see [local-control requirements](LOCAL_CONTROL.md).
+
+## Standalone packaging checkpoint
+
+- The earlier recovery monitor completed 1,800 seconds of mixed playing/paused
+  observation with all API samples responsive and no three-consecutive-high-CPU
+  flag. This is not continuous audio or multi-hour playback certification.
+- Refactored source/frozen paths keep packaged state and cache outside the bundle
+  and separate from the development lab. Six account-free package tests pass:
+  path-only/private configuration, architecture/key validation, relocatable
+  resources and absolute-profile enforcement. Existing focused ABI, lifecycle,
+  client, receiver and control-harness tests also pass after the refactor.
+- The approximately 65 MiB app passes `codesign --verify --deep --strict`. Its
+  audit checks 665 helper payload hashes, 42 symlinks and 81 native binaries;
+  native load commands have no Homebrew paths. The actual official executable
+  hash and actual API-key bytes were absent from all regular bundle files.
+  Neither private value was printed by the exclusion audit.
+- From `/tmp` with an empty environment except system-tool PATH, the packaged
+  doctor ran unchanged Soloist 1.3.8.36 to normal exit, with both executable-byte
+  checks passing, and opened nine native CoreAudio output sinks without a mic.
+  Copying/renaming the app into a new temporary path containing spaces and using
+  a fresh absolute profile passed the same checks and signature/manifest audit.
+  This does not substitute for testing a physically clean second Mac.
+- Packaged CLI configuration stores external file paths only. A separate,
+  previously unpaired profile started discovery and answered local auth-state
+  queries as logged out. No account pairing, music or source-code changes were
+  needed for this runtime-startup test. The development lab was not stopped.
+  The 30-second packaged run then exited normally without force, passing both
+  executable-byte checks for 20,478,304 bytes.
+- Basic dark-mode launcher layout, accessibility labels and missing-file
+  validation were inspected. A graphical setup helper stalled in `open()`;
+  macOS TCC logs identify a pending Documents-folder authorization request.
+  No Full Disk Access, privacy-setting change or security bypass was attempted.
+  The first file-picker test also left the official ELF disabled. Explicit
+  file-picker flags and a cancellable setup/wait message were added, but this
+  graphical path still needs revalidation. Command-line startup is not proof
+  that graphical Start/Stop works.
+- No authenticated playback/lossless/AI DJ result is claimed for the packaged
+  profile yet. Public notarization, redistribution-license completion and local
+  API hardening remain unfinished. Mobile feasibility is documented only;
+  there are no iOS, iPadOS, Android, Windows or Linux-host test results.
