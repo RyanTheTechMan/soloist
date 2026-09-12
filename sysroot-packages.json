@@ -1,0 +1,191 @@
+{
+  "mirror": "https://deb.debian.org/debian/",
+  "index": "dists/trixie/main/binary-arm64/Packages.xz",
+  "index_sha256": "be16b37b2f740f066ea93d35d56f04f94d63693e5a3eb421b052bf86fae75bcd",
+  "packages": [
+    {
+      "Package": "gcc-14-base",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/gcc-14-base_14.2.0-19_arm64.deb",
+      "Size": "49444",
+      "SHA256": "34ee90679b018c0e64234747a4c4c0ae6b7f63541115037465a8627c2dfbc594"
+    },
+    {
+      "Package": "libasyncns0",
+      "Version": "0.8-6+b5",
+      "Architecture": "arm64",
+      "Filename": "pool/main/liba/libasyncns/libasyncns0_0.8-6+b5_arm64.deb",
+      "Size": "11672",
+      "SHA256": "818bbcaa7ada536a1bdd5b1c26b77608606403f5c15557691e83d0b4433b89ef"
+    },
+    {
+      "Package": "libatomic1",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/libatomic1_14.2.0-19_arm64.deb",
+      "Size": "10128",
+      "SHA256": "7ccff90234484bf21ae5ecb79d25b6a84b2f4038f65dd139085b2e3a937cd8dc"
+    },
+    {
+      "Package": "libc6",
+      "Version": "2.41-12+deb13u4",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/glibc/libc6_2.41-12+deb13u4_arm64.deb",
+      "Size": "2483572",
+      "SHA256": "8784eda966b189c777a384dac5ce009e8fc9b52d006926c5a013e7fa8aa688cc"
+    },
+    {
+      "Package": "libcap2",
+      "Version": "1:2.75-10+deb13u1+b3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libc/libcap2/libcap2_2.75-10+deb13u1+b3_arm64.deb",
+      "Size": "28568",
+      "SHA256": "863aa5b9cdf6f80010b48982d4639126b09a89eeef2c0c5c7be226297c811581"
+    },
+    {
+      "Package": "libdbus-1-3",
+      "Version": "1.16.2-2",
+      "Architecture": "arm64",
+      "Filename": "pool/main/d/dbus/libdbus-1-3_1.16.2-2_arm64.deb",
+      "Size": "169068",
+      "SHA256": "ca6bb5f2047ad58d274cb7d14216035a07d8e5aae6f6a0122c4f6293c9c39515"
+    },
+    {
+      "Package": "libflac14",
+      "Version": "1.5.0+ds-2",
+      "Architecture": "arm64",
+      "Filename": "pool/main/f/flac/libflac14_1.5.0+ds-2_arm64.deb",
+      "Size": "179768",
+      "SHA256": "11800827306e56fcbd1a65ea67d9d13126fc02bf87fdfecd35e0f48a145b3c59"
+    },
+    {
+      "Package": "libgcc-s1",
+      "Version": "14.2.0-19",
+      "Architecture": "arm64",
+      "Filename": "pool/main/g/gcc-14/libgcc-s1_14.2.0-19_arm64.deb",
+      "Size": "54104",
+      "SHA256": "1108bc87879833d6d9a145f22a4a15cddb34e065b4b5f4b97bee586adbac2851"
+    },
+    {
+      "Package": "libmp3lame0",
+      "Version": "3.100-6+b3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/l/lame/libmp3lame0_3.100-6+b3_arm64.deb",
+      "Size": "354760",
+      "SHA256": "ed3563722129ffa4def03b7af0b589fa20eef972bdcc4599202ddb1ac654c58e"
+    },
+    {
+      "Package": "libmpg123-0t64",
+      "Version": "1.32.10-1+deb13u1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/m/mpg123/libmpg123-0t64_1.32.10-1+deb13u1_arm64.deb",
+      "Size": "143208",
+      "SHA256": "d284df39ff3b64f1cdf274352613c52534c55eed82c3a2ff0fc7ba154acd7bf0"
+    },
+    {
+      "Package": "libogg0",
+      "Version": "1.3.5-3+b2",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libo/libogg/libogg0_1.3.5-3+b2_arm64.deb",
+      "Size": "23580",
+      "SHA256": "d59a83ab352bf0c16ce9513fdf264f87214813ca8c628c652801ef476ece8286"
+    },
+    {
+      "Package": "libopus0",
+      "Version": "1.5.2-2",
+      "Architecture": "arm64",
+      "Filename": "pool/main/o/opus/libopus0_1.5.2-2_arm64.deb",
+      "Size": "2812952",
+      "SHA256": "1d980e8a4717074805a98dbe07671cb3bee068c25709315f3de836980c629836"
+    },
+    {
+      "Package": "libpulse0",
+      "Version": "17.0+dfsg1-2+b1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/p/pulseaudio/libpulse0_17.0+dfsg1-2+b1_arm64.deb",
+      "Size": "236376",
+      "SHA256": "2de5610e3affe69cfb11110f890375261b47c9e0fc1a81eef7ecc4d6d2dc9a6d"
+    },
+    {
+      "Package": "libsndfile1",
+      "Version": "1.2.2-2+deb13u1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libs/libsndfile/libsndfile1_1.2.2-2+deb13u1_arm64.deb",
+      "Size": "185528",
+      "SHA256": "6c94f17e1f02778f98b96bb9ae19ff30085662e96685898a018c26bfd4bfc3f2"
+    },
+    {
+      "Package": "libsystemd0",
+      "Version": "257.13-1~deb13u1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/s/systemd/libsystemd0_257.13-1~deb13u1_arm64.deb",
+      "Size": "422500",
+      "SHA256": "d2f63c408549c29eaefb6f4c948393edce99f45ee8e43c991391bef63fb7d54b"
+    },
+    {
+      "Package": "libvorbis0a",
+      "Version": "1.3.7-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libv/libvorbis/libvorbis0a_1.3.7-3_arm64.deb",
+      "Size": "83772",
+      "SHA256": "6e8e64ebe692dd2d019af7f914f2e3b81bf13d4b1ce2516fb4248a0310ef7cf6"
+    },
+    {
+      "Package": "libvorbisenc2",
+      "Version": "1.3.7-3",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libv/libvorbis/libvorbisenc2_1.3.7-3_arm64.deb",
+      "Size": "75532",
+      "SHA256": "4a477b3ae19ba50a288f036c8176d61cd9f3836ba65472f88b95e3f6b3bf2dd3"
+    },
+    {
+      "Package": "libx11-6",
+      "Version": "2:1.8.12-1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libx/libx11/libx11-6_1.8.12-1_arm64.deb",
+      "Size": "794952",
+      "SHA256": "646f2d3f2165c8eebceb7f4aaca31e97a818bb11a045964833a9f764b738bac2"
+    },
+    {
+      "Package": "libx11-data",
+      "Version": "2:1.8.12-1",
+      "Architecture": "all",
+      "Filename": "pool/main/libx/libx11/libx11-data_1.8.12-1_all.deb",
+      "Size": "343072",
+      "SHA256": "c54f87069888f80ba4da586da6147d74c7598ccdd8b90906dbc4271fa414c738"
+    },
+    {
+      "Package": "libx11-xcb1",
+      "Version": "2:1.8.12-1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libx/libx11/libx11-xcb1_1.8.12-1_arm64.deb",
+      "Size": "247336",
+      "SHA256": "1eafaa4295e129d6a81e742ab8da43194daa6b916199923c8cef8ad358985894"
+    },
+    {
+      "Package": "libxau6",
+      "Version": "1:1.0.11-1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libx/libxau/libxau6_1.0.11-1_arm64.deb",
+      "Size": "20576",
+      "SHA256": "ac1061728670f4626adaa1288953a0e6fb801c9cae72ee1c3231e63e2609d23a"
+    },
+    {
+      "Package": "libxcb1",
+      "Version": "1.17.0-2+b1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libx/libxcb/libxcb1_1.17.0-2+b1_arm64.deb",
+      "Size": "143168",
+      "SHA256": "d0178198e80ed4cacdececabe2c112ec88c7a9258cc11a55b8e267ab14a90d82"
+    },
+    {
+      "Package": "libxdmcp6",
+      "Version": "1:1.1.5-1",
+      "Architecture": "arm64",
+      "Filename": "pool/main/libx/libxdmcp/libxdmcp6_1.1.5-1_arm64.deb",
+      "Size": "27752",
+      "SHA256": "e10bbb0802181992ecf091e9425171850eee16068729c109214ba4924f81fb52"
+    }
+  ]
+}

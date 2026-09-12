@@ -1,0 +1,17 @@
+/build/
+/state/
+/cache/
+/vendor/
+__pycache__/
+*.api
+*.key
+*.pem
+*.log
+*.sample.txt
+.DS_Store
+/.venv/
+/dist/
+/soloist
+/soloist_*.tar.gz
+/downloads/
+/*-source.zip

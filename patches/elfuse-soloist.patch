@@ -1,0 +1,930 @@
+diff --git a/Makefile b/Makefile
+index cf126f2..46d61e2 100644
+--- a/Makefile
++++ b/Makefile
+@@ -27,6 +27,7 @@ SRCS := \
+     core/bootstrap.c \
+     core/guest-env.c \
+     core/launch.c \
++    core/text-integrity.c \
+     core/rosetta.c \
+     core/sysroot.c \
+     runtime/thread.c \
+diff --git a/src/core/elf.c b/src/core/elf.c
+index 9ac44e2..8ef20e9 100644
+--- a/src/core/elf.c
++++ b/src/core/elf.c
+@@ -439,6 +439,34 @@ static bool elf_record_load(const elf64_phdr_t *ph,
+     return true;
+ }
+ 
++/* Read-only dynamic-tag inspection. This does not apply relocations. Bound
++ * both the file extent and work before scanning untrusted dynamic entries.
++ */
++static bool elf_read_dynamic(int fd, const elf64_phdr_t *ph,
++                              uint64_t file_size, elf_info_t *info)
++{
++    struct dynamic_entry { int64_t tag; uint64_t value; };
++    if (ph->p_filesz < sizeof(struct dynamic_entry) ||
++        ph->p_filesz > 1024 * 1024 ||
++        ph->p_filesz % sizeof(struct dynamic_entry) ||
++        ph->p_offset > file_size ||
++        ph->p_filesz > file_size - ph->p_offset)
++        return false;
++    for (uint64_t offset = 0; offset < ph->p_filesz;
++         offset += sizeof(struct dynamic_entry)) {
++        struct dynamic_entry entry;
++        if (pread(fd, &entry, sizeof(entry),
++                   (off_t) (ph->p_offset + offset)) != sizeof(entry))
++            return false;
++        if (entry.tag == 0) /* DT_NULL */
++            return true;
++        if (entry.tag == 22 || /* DT_TEXTREL */
++            (entry.tag == 30 && (entry.value & 4))) /* DT_FLAGS/DF_TEXTREL */
++            info->has_text_relocations = true;
++    }
++    return false;
++}
++
+ int elf_load_fd(int fd, const char *display_path, elf_info_t *info)
+ {
+     memset(info, 0, sizeof(*info));
+@@ -559,6 +587,10 @@ int elf_load_fd(int fd, const char *display_path, elf_info_t *info)
+         if (ph.p_type == PT_LOAD &&
+             !elf_record_load(&ph, display_path, i, file_size, &seg_count, info))
+             goto fail;
++        if (ph.p_type == PT_DYNAMIC && !elf_read_dynamic(fd, &ph, file_size, info)) {
++            log_error("%s: invalid dynamic table", display_path);
++            goto fail;
++        }
+     }
+ 
+     if (seg_count == 0) {
+diff --git a/src/core/elf.h b/src/core/elf.h
+index 8f58ca4..2eec4d4 100644
+--- a/src/core/elf.h
++++ b/src/core/elf.h
+@@ -106,6 +106,7 @@ typedef struct {
+      */
+     uint64_t phdr_gpa;
+     bool phdr_valid;
++    bool has_text_relocations; /* DT_TEXTREL or DF_TEXTREL in PT_DYNAMIC */
+ 
+     /* PT_INTERP: dynamic linker path (empty if statically linked) */
+     char interp_path[256];
+diff --git a/src/core/launch.c b/src/core/launch.c
+index bbe068b..45ef0de 100644
+--- a/src/core/launch.c
++++ b/src/core/launch.c
+@@ -20,6 +20,7 @@
+ #include <errno.h>
+ #include <stdbool.h>
+ #include <stdint.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <unistd.h>
+@@ -28,6 +29,7 @@
+ #include "core/guest.h"
+ #include "core/shim-globals.h"
+ #include "core/sysroot.h"
++#include "core/text-integrity.h"
+ 
+ #include "runtime/futex.h"   /* futex_interrupt_request */
+ #include "runtime/procemu.h" /* proc_pty_release_process_slaves */
+@@ -60,6 +62,9 @@ int elfuse_launch(const launch_args_t *args)
+     guest_t g;
+     bool guest_initialized = false;
+     guest_bootstrap_t boot;
++    text_integrity_t text_check = {0};
++    const char *verify_setting = getenv("ELFUSE_VERIFY_TEXT");
++    bool verify_text = verify_setting && strcmp(verify_setting, "1") == 0;
+ 
+     /* Local copy of the temp flag (ownership contract in launch.h): the
+      * caller's launch_args_t is const, and the flag must drop once the unlink
+@@ -100,6 +105,21 @@ int elfuse_launch(const launch_args_t *args)
+             shim_bin_len, args->verbose, &guest_initialized, &boot) < 0)
+         goto fail;
+ 
++    if (verify_text) {
++        if (g.is_rosetta || args->gdb_port > 0 ||
++            !text_integrity_add(&text_check, &boot.elf_info,
++                                boot.elf_load_base, args->elf_path) ||
++            (boot.elf_info.interp_path[0] &&
++             !text_integrity_add(&text_check, &boot.interp_info,
++                                 boot.interp_base, boot.interp_resolved)) ||
++            !text_integrity_verify(&text_check, &g)) {
++            log_error("executable-byte integrity preflight failed");
++            goto fail;
++        }
++        fprintf(stderr, "INTEGRITY: executable-byte preflight passed (%zu bytes)\n",
++                text_check.total);
++    }
++
+     /* A FUSE-materialized temp has been loaded; drop it once the guest has its
+      * own mapping, unless Rosetta still needs the reopenable host path.
+      */
+@@ -236,6 +256,17 @@ int elfuse_launch(const launch_args_t *args)
+     thread_wake_all_blocked();
+     thread_join_workers();
+ 
++    if (verify_text) {
++        if (!text_integrity_verify(&text_check, &g)) {
++            log_error("executable-byte exit comparison failed");
++            exit_code = 125;
++        } else {
++            fprintf(stderr, "INTEGRITY: executable-byte exit comparison passed (%zu bytes)\n",
++                    text_check.total);
++        }
++    }
++    text_integrity_destroy(&text_check);
++
+     /* Diagnostic counter dump runs before guest_destroy so the shim_data
+      * mapping is still valid. ELFUSE_SHIM_STATS is the gate; an unset variable
+      * produces no output.
+@@ -272,6 +303,7 @@ int elfuse_launch(const launch_args_t *args)
+     return exit_code;
+ 
+ fail:
++    text_integrity_destroy(&text_check);
+     /* Bring-up failed: unwind whatever exists so far, including the temp unlink
+      * this side owns past the prepare call (contract in launch.h). Staged
+      * --user credentials are dropped too (proc.h).
+diff --git a/src/main.c b/src/main.c
+index 1f82b0c..618c203 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -18,6 +18,7 @@
+  */
+ 
+ #include <errno.h>
++#include <fcntl.h>
+ #include <limits.h>
+ #include <stdbool.h>
+ #include <stdint.h>
+@@ -26,6 +27,7 @@
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sys/resource.h>
++#include <sys/stat.h>
+ #include <unistd.h>
+ 
+ #include "utils.h"
+@@ -51,6 +53,49 @@
+ 
+ extern char **environ;
+ 
++/* Append a private argument without placing its content in the host argv.
++ * Only an owner-only regular file is accepted; diagnostics never echo data.
++ */
++static char *read_private_argument(const char *path)
++{
++    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
++    if (fd < 0)
++        return NULL;
++    struct stat st;
++    if (fstat(fd, &st) < 0 || !S_ISREG(st.st_mode) ||
++        st.st_uid != getuid() || (st.st_mode & 077) ||
++        st.st_size < 1 || st.st_size > 4096) {
++        close(fd);
++        return NULL;
++    }
++    size_t size = (size_t) st.st_size, done = 0;
++    char *value = calloc(size + 1, 1);
++    if (!value) {
++        close(fd);
++        return NULL;
++    }
++    while (done < size) {
++        ssize_t count = read(fd, value + done, size - done);
++        if (count < 0 && errno == EINTR)
++            continue;
++        if (count <= 0)
++            break;
++        done += (size_t) count;
++    }
++    close(fd);
++    if (done != size || memchr(value, 0, size)) {
++        free(value);
++        return NULL;
++    }
++    while (size && (value[size - 1] == '\n' || value[size - 1] == '\r'))
++        value[--size] = 0;
++    if (!size) {
++        free(value);
++        return NULL;
++    }
++    return value;
++}
++
+ static int parse_int_arg(const char *s, int min, int max, int *out)
+ {
+     /* Seed end with s (strtol's no-conversion result) so the end == s guard
+@@ -215,7 +260,8 @@ static int host_dc_zva_assert(void)
+     "usage: elfuse [--verbose] [--timeout N] [--sysroot PATH]" sep         \
+     "[--create-sysroot PATH] [--no-rosetta] [--fakeroot] [--gdb PORT]" sep \
+     "[--gdb-stop-on-entry] [--user UID[:GID]] [--workdir DIR]" sep         \
+-    "[--env KEY=VALUE] [--clear-env] <elf-path> [args...]"
++    "[--env KEY=VALUE] [--clear-env] [--append-arg-file PATH]" sep \
++    "<elf-path> [args...]"
+ 
+ #define ELFUSE_USAGE ELFUSE_USAGE_BODY(" ")
+ #define ELFUSE_USAGE_WRAPPED ELFUSE_USAGE_BODY("\n              ")
+@@ -256,6 +302,7 @@ int main(int argc, char **argv)
+     char **env_overrides = NULL;
+     int n_env_overrides = 0;
+     bool clear_env = false;
++    const char *private_arg_path = NULL;
+     int arg_start = 1;
+ 
+     /* Everything the shared cleanup label reads is declared and initialized
+@@ -462,6 +509,10 @@ int main(int argc, char **argv)
+             }
+             env_overrides[n_env_overrides++] = argv[arg_start + 1];
+             arg_start += 2;
++        } else if (!strcmp(argv[arg_start], "--append-arg-file") &&
++                   arg_start + 1 < argc) {
++            private_arg_path = argv[arg_start + 1];
++            arg_start += 2;
+         } else if (!strcmp(argv[arg_start], "--clear-env")) {
+             clear_env = true;
+             arg_start++;
+@@ -596,13 +647,13 @@ int main(int argc, char **argv)
+         }
+     }
+     sysroot = sysroot_path;
+-    guest_argc = argc - arg_start;
++    guest_argc = argc - arg_start + (private_arg_path ? 1 : 0);
+     guest_argv = calloc((size_t) guest_argc, sizeof(char *));
+     if (!elf_path || (have_sysroot && !sysroot_path) || !guest_argv) {
+         log_error("out of memory");
+         goto cleanup;
+     }
+-    for (int i = 0; i < guest_argc; i++) {
++    for (int i = 0; i < argc - arg_start; i++) {
+         guest_argv[i] = strdup(argv[arg_start + i]);
+         if (!guest_argv[i]) {
+             log_error("out of memory");
+@@ -610,6 +661,18 @@ int main(int argc, char **argv)
+         }
+     }
+ 
++    if (private_arg_path) {
++        if (verbose || gdb_port > 0) {
++            log_error("private arguments cannot be used with tracing or GDB");
++            goto cleanup;
++        }
++        guest_argv[guest_argc - 1] = read_private_argument(private_arg_path);
++        if (!guest_argv[guest_argc - 1]) {
++            log_error("private argument requires an owner-only regular file of 1..4096 bytes without NUL");
++            goto cleanup;
++        }
++    }
++
+     if (create_sysroot) {
+         if (sysroot_create_mount(sysroot_path, &sysroot_mount) < 0) {
+             log_error("failed to provision case-sensitive sysroot at %s: %s",
+diff --git a/src/runtime/futex.c b/src/runtime/futex.c
+index 705914e..3fcb914 100644
+--- a/src/runtime/futex.c
++++ b/src/runtime/futex.c
+@@ -84,6 +84,13 @@ static _Atomic int futex_interrupt_requested = 0;
+ #define FUTEX_TRYLOCK_PI 8
+ #define FUTEX_WAIT_BITSET 9
+ #define FUTEX_WAKE_BITSET 10
++#define FUTEX_CLOCK_REALTIME 0x100
++
++enum futex_timeout_mode {
++    FUTEX_TIMEOUT_RELATIVE = 0,
++    FUTEX_TIMEOUT_REALTIME = 1,
++    FUTEX_TIMEOUT_MONOTONIC = 2,
++};
+ 
+ /* Strips the FUTEX_PRIVATE_FLAG (0x80) and FUTEX_CLOCK_REALTIME bits so the
+  * dispatch switch sees only the base operation. Emulation doesn't differentiate
+@@ -658,13 +665,15 @@ static int linux_timespec_is_valid(const linux_timespec_t *lts)
+ 
+ /* Convert a Linux guest timespec to an absolute struct timespec deadline. For
+  * FUTEX_WAIT (relative timeout), adds the duration to the current time. For
+- * FUTEX_WAIT_BITSET (absolute timeout), uses the value directly.
++ * FUTEX_WAIT_BITSET selects an absolute monotonic or realtime deadline.
++ * Darwin condition variables consume realtime deadlines, so translate the
++ * monotonic clock domain rather than treating uptime as a Unix timestamp.
+  * Returns 0 on success, -1 if the guest pointer is invalid, -2 if the guest
+  * timespec is malformed.
+  */
+ static int futex_make_deadline(guest_t *g,
+                                uint64_t timeout_gva,
+-                               int is_absolute,
++                               enum futex_timeout_mode mode,
+                                struct timespec *out)
+ {
+     linux_timespec_t lts;
+@@ -673,7 +682,14 @@ static int futex_make_deadline(guest_t *g,
+     if (!linux_timespec_is_valid(&lts))
+         return -2;
+ 
+-    if (is_absolute) {
++    if (mode == FUTEX_TIMEOUT_MONOTONIC) {
++        struct timespec mono, real;
++        clock_gettime(CLOCK_MONOTONIC, &mono);
++        clock_gettime(CLOCK_REALTIME, &real);
++        out->tv_sec = real.tv_sec + ((time_t) lts.tv_sec - mono.tv_sec);
++        out->tv_nsec = real.tv_nsec + ((long) lts.tv_nsec - mono.tv_nsec);
++        timespec_normalize(out);
++    } else if (mode == FUTEX_TIMEOUT_REALTIME) {
+         out->tv_sec = (time_t) lts.tv_sec;
+         out->tv_nsec = (long) lts.tv_nsec;
+     } else {
+@@ -870,7 +886,7 @@ static int64_t futex_os_sync_wait(guest_t *g,
+     struct timespec deadline;
+     if (has_timeout) {
+         int rc =
+-            futex_make_deadline(g, timeout_gva, /*is_absolute=*/0, &deadline);
++            futex_make_deadline(g, timeout_gva, FUTEX_TIMEOUT_RELATIVE, &deadline);
+         if (rc == -1)
+             return -LINUX_EFAULT;
+         if (rc == -2)
+@@ -1078,7 +1094,7 @@ static int64_t futex_wait_inner(unsigned *pub_bucket_out,
+                                 uint32_t expected,
+                                 uint64_t timeout_gva,
+                                 uint32_t bitset,
+-                                int is_absolute)
++                                enum futex_timeout_mode mode)
+ {
+     if (bitset == 0)
+         return -LINUX_EINVAL;
+@@ -1092,7 +1108,7 @@ static int64_t futex_wait_inner(unsigned *pub_bucket_out,
+     bool has_timeout = (timeout_gva != 0);
+     struct timespec deadline;
+     if (has_timeout) {
+-        int rc = futex_make_deadline(g, timeout_gva, is_absolute, &deadline);
++        int rc = futex_make_deadline(g, timeout_gva, mode, &deadline);
+         if (rc == -1)
+             return -LINUX_EFAULT;
+         if (rc == -2)
+@@ -1283,7 +1299,7 @@ static int64_t futex_wait_inner(unsigned *pub_bucket_out,
+      * FUTEX_WAIT_BITSET is absolute and re-derives the same instant, so it
+      * stays restartable. See syscall_restart_forbid.
+      */
+-    if (ret == -LINUX_EINTR && has_timeout && !is_absolute)
++    if (ret == -LINUX_EINTR && has_timeout && mode == FUTEX_TIMEOUT_RELATIVE)
+         syscall_restart_forbid();
+     return ret;
+ }
+@@ -1312,14 +1328,14 @@ static int64_t futex_wait(guest_t *g,
+                           uint32_t expected,
+                           uint64_t timeout_gva,
+                           uint32_t bitset,
+-                          int is_absolute)
++                          enum futex_timeout_mode mode)
+ {
+     unsigned idx = futex_hash(uaddr);
+     unsigned pub = idx;
+ 
+     shim_globals_futex_waiters_add(g, idx, +1);
+     int64_t rc = futex_wait_inner(&pub, g, uaddr, expected, timeout_gva, bitset,
+-                                  is_absolute);
++                                  mode);
+     shim_globals_futex_waiters_add(g, pub, -1);
+     return rc;
+ }
+@@ -1822,7 +1838,7 @@ static int64_t futex_lock_pi_inner(guest_t *g,
+     struct timespec deadline;
+     if (has_timeout) {
+         int rc =
+-            futex_make_deadline(g, timeout_gva, /*is_absolute=*/1, &deadline);
++            futex_make_deadline(g, timeout_gva, FUTEX_TIMEOUT_REALTIME, &deadline);
+         if (rc == -1)
+             return -LINUX_EFAULT;
+         if (rc == -2)
+@@ -2206,7 +2222,7 @@ int64_t sys_futex(guest_t *g,
+             return futex_os_sync_wait_counted(g, uaddr, val, timeout_gva);
+ #endif
+         return futex_wait(g, uaddr, val, timeout_gva, FUTEX_BITSET_MATCH_ANY,
+-                          /*is_absolute=*/0);
++                          FUTEX_TIMEOUT_RELATIVE);
+ 
+     case FUTEX_WAKE:
+         return futex_wake(g, uaddr, val, FUTEX_BITSET_MATCH_ANY);
+@@ -2238,7 +2254,9 @@ int64_t sys_futex(guest_t *g,
+          * trade. tests/bench-futex.c keeps the row (BENCH_FUTEX_HANDOFF_BITSET)
+          * so the next attempt starts from a measurement rather than the idea.
+          */
+-        return futex_wait(g, uaddr, val, timeout_gva, val3, /*is_absolute=*/1);
++        return futex_wait(g, uaddr, val, timeout_gva, val3,
++                          (op & FUTEX_CLOCK_REALTIME) ? FUTEX_TIMEOUT_REALTIME
++                                                     : FUTEX_TIMEOUT_MONOTONIC);
+ 
+     case FUTEX_WAKE_BITSET:
+         return futex_wake(g, uaddr, val, val3);
+diff --git a/src/runtime/procemu.c b/src/runtime/procemu.c
+index fa5b501..fb532c7 100644
+--- a/src/runtime/procemu.c
++++ b/src/runtime/procemu.c
+@@ -3441,13 +3441,32 @@ static int proc_readlink_self_exe(char *buf, size_t bufsiz)
+ 
+ int proc_intercept_readlink(const char *path, char *buf, size_t bufsiz)
+ {
++    /* Linux exposes self as a relative symlink to the current process. */
++    if (!strcmp(path, "/proc/self")) {
++        char target[32];
++        size_t len = (size_t) snprintf(target, sizeof(target), "%lld",
++                                       (long long) proc_get_pid());
++        if (len > bufsiz)
++            len = bufsiz;
++        memcpy(buf, target, len);
++        return (int) len;
++    }
++
+     {
+         char alias[LINUX_PATH_MAX];
+         int aliased = proc_alias_self(path, alias, sizeof(alias));
+         if (aliased < 0)
+             return -1;
+-        if (aliased > 0)
++        if (aliased > 0) {
++            /* The numeric process entry itself is a directory, not self's
++             * symlink. Only its children share the self handlers.
++             */
++            if (!strcmp(alias, "/proc/self")) {
++                errno = EINVAL;
++                return -1;
++            }
+             return proc_intercept_readlink(alias, buf, bufsiz);
++        }
+     }
+ 
+     if (!strcmp(path, "/proc/self/exe"))
+@@ -3530,6 +3549,21 @@ int proc_intercept_readlink(const char *path, char *buf, size_t bufsiz)
+         return (int) len;
+     }
+ 
++    /* Existing synthetic proc directories and regular files are not links.
++     * Falling through to Darwin reports ENOENT for /proc and breaks callers
++     * that canonicalize paths by attempting readlink on every component.
++     */
++    if (!strcmp(path, "/proc") || !strncmp(path, "/proc/", 6)) {
++        struct stat st;
++        int rc = proc_intercept_stat_at(path, &st, false);
++        if (rc == 0) {
++            errno = EINVAL;
++            return -1;
++        }
++        if (rc != PROC_NOT_INTERCEPTED)
++            return rc;
++    }
++
+     /* /dev/bus/usb and /sys/bus/usb entries are real dirs/files, never
+      * symlinks; answer EINVAL for existing paths rather than falling through to
+      * the host (where /sys does not exist and the error would be ENOENT).
+diff --git a/src/syscall/linux-wire.h b/src/syscall/linux-wire.h
+index 8c767eb..12f8d28 100644
+--- a/src/syscall/linux-wire.h
++++ b/src/syscall/linux-wire.h
+@@ -196,6 +196,7 @@ typedef struct {
+ #define LINUX_MSG_TRUNC 0x20
+ #define LINUX_MSG_EOR 0x80
+ #define LINUX_MSG_NOSIGNAL 0x4000
++#define LINUX_MSG_ERRQUEUE 0x2000
+ #define LINUX_MSG_WAITFORONE 0x10000
+ #define LINUX_MSG_CMSG_CLOEXEC 0x40000000
+ 
+@@ -566,6 +567,8 @@ enum {
+      * the modes macOS supports.
+      */
+     SOCK_OPT_IP_MTU_DISCOVER,
++    SOCK_OPT_IP_RECVERR,
++    SOCK_OPT_IPV6_RECVERR,
+     SOCK_OPT_COUNT
+ };
+ 
+diff --git a/src/syscall/net-abi.c b/src/syscall/net-abi.c
+index c92793b..af6878e 100644
+--- a/src/syscall/net-abi.c
++++ b/src/syscall/net-abi.c
+@@ -24,7 +24,8 @@ int socket_small_int_normalize(int level, int optname, int value)
+           optname == LINUX_SO_OOBINLINE || optname == LINUX_SO_PASSCRED)) ||
+         (level == LINUX_IPPROTO_TCP && optname == LINUX_TCP_NODELAY) ||
+         (level == LINUX_IPPROTO_IP &&
+-         (optname == LINUX_IP_HDRINCL || optname == LINUX_IP_PKTINFO ||
++         (optname == LINUX_IP_MULTICAST_LOOP ||
++          optname == LINUX_IP_HDRINCL || optname == LINUX_IP_PKTINFO ||
+           optname == LINUX_IP_RECVTTL || optname == LINUX_IP_RECVTOS)) ||
+         (level == LINUX_IPPROTO_IPV6 && optname == LINUX_IPV6_V6ONLY))
+         return value != 0;
+@@ -72,6 +73,8 @@ int socket_opt_uses_small_int(int level, int optname)
+ 
+     if (level == LINUX_IPPROTO_IP) {
+         switch (optname) {
++        case LINUX_IP_MULTICAST_TTL:
++        case LINUX_IP_MULTICAST_LOOP:
+         case LINUX_IP_TOS:
+         case LINUX_IP_TTL:
+         case LINUX_IP_HDRINCL:
+@@ -318,6 +321,14 @@ int translate_sockopt(int linux_optname)
+ int translate_ip_sockopt_to_mac(int linux_optname)
+ {
+     switch (linux_optname) {
++    case LINUX_IP_MULTICAST_TTL:
++        return IP_MULTICAST_TTL;
++    case LINUX_IP_MULTICAST_LOOP:
++        return IP_MULTICAST_LOOP;
++    case LINUX_IP_ADD_MEMBERSHIP:
++        return IP_ADD_MEMBERSHIP;
++    case LINUX_IP_DROP_MEMBERSHIP:
++        return IP_DROP_MEMBERSHIP;
+     case LINUX_IP_TOS:
+         return IP_TOS;
+     case LINUX_IP_TTL:
+diff --git a/src/syscall/net-msg.c b/src/syscall/net-msg.c
+index d358a2c..45513da 100644
+--- a/src/syscall/net-msg.c
++++ b/src/syscall/net-msg.c
+@@ -489,6 +489,10 @@ int64_t sys_recvmsg(guest_t *g, int fd, uint64_t msg_gva, int flags)
+     if (fd_get_type(fd) == FD_NETLINK)
+         return netlink_recvmsg(fd, g, msg_gva, flags);
+ 
++    /* Match the adapter's explicitly empty extended ICMP error queue. */
++    if (flags & LINUX_MSG_ERRQUEUE)
++        return net_socket_fd_is_valid(fd) ? -LINUX_EAGAIN : -LINUX_EBADF;
++
+     host_fd_ref_t host_ref;
+     fd_block_state_t sock_st;
+     int64_t ref_err = host_fd_ref_open_state(fd, &host_ref, &sock_st);
+diff --git a/src/syscall/net-sockopt.c b/src/syscall/net-sockopt.c
+index 53724cf..0b73690 100644
+--- a/src/syscall/net-sockopt.c
++++ b/src/syscall/net-sockopt.c
+@@ -126,6 +126,8 @@ static int net_sock_opt_index_for(int level, int optname)
+     }
+     if (level == LINUX_IPPROTO_IPV6 && optname == LINUX_IPV6_V6ONLY)
+         return SOCK_OPT_IPV6_V6ONLY;
++    if (level == LINUX_IPPROTO_IPV6 && optname == LINUX_IPV6_RECVERR)
++        return SOCK_OPT_IPV6_RECVERR;
+     if (level == LINUX_IPPROTO_IP) {
+         switch (optname) {
+         case LINUX_IP_TOS:
+@@ -142,6 +144,8 @@ static int net_sock_opt_index_for(int level, int optname)
+             return SOCK_OPT_IP_RECVTOS;
+         case LINUX_IP_MTU_DISCOVER:
+             return SOCK_OPT_IP_MTU_DISCOVER;
++        case LINUX_IP_RECVERR:
++            return SOCK_OPT_IP_RECVERR;
+         default:
+             return -1;
+         }
+diff --git a/src/syscall/net.c b/src/syscall/net.c
+index fd91d4c..4a6fa54 100644
+--- a/src/syscall/net.c
++++ b/src/syscall/net.c
+@@ -1162,6 +1162,12 @@ int64_t sys_recvfrom(guest_t *g,
+     if (fd_get_type(fd) == FD_NETLINK)
+         return netlink_recv(fd, g, buf_gva, len, flags, src_gva, addrlen_gva);
+ 
++    /* Extended ICMP queues are not supplied by the host adapter. Never read
++     * ordinary payload bytes as an error-queue response or block waiting.
++     */
++    if (flags & LINUX_MSG_ERRQUEUE)
++        return net_socket_fd_is_valid(fd) ? -LINUX_EAGAIN : -LINUX_EBADF;
++
+     host_fd_ref_t host_ref;
+     fd_block_state_t recv_st;
+     int64_t ref_err = host_fd_ref_open_state(fd, &host_ref, &recv_st);
+@@ -1345,8 +1351,16 @@ static bool translate_sockopt_level(int level,
+     }
+     if (level == LINUX_IPPROTO_IPV6) {
+         *mac_level = IPPROTO_IPV6;
+-        if (optname == LINUX_IPV6_V6ONLY)
++        if (optname == LINUX_IPV6_V6ONLY) {
+             *mac_optname = IPV6_V6ONLY;
++            return true;
++        }
++        /* Linux and Darwin IPv6 option numbers differ. Passing an unknown
++         * number through can operate on a different option: Linux RECVERR
++         * (25) hits Darwin IPV6_CHECKSUM. RECVERR is handled separately as an
++         * empty emulated error queue; other unknown options are unsupported.
++         */
++        return false;
+     }
+     return true;
+ }
+@@ -1404,6 +1418,15 @@ int64_t sys_setsockopt(guest_t *g,
+ 
+     int small_int_opt = socket_opt_uses_small_int(level, optname);
+ 
++    /* The eight-byte IPv4 ip_mreq has the same network-order layout on both
++     * systems. Do not pass Linux's extended ip_mreqn through blindly: its
++     * interface-index form needs a separate translation.
++     */
++    if (level == LINUX_IPPROTO_IP &&
++        (optname == LINUX_IP_ADD_MEMBERSHIP ||
++         optname == LINUX_IP_DROP_MEMBERSHIP) && optlen != 8)
++        return -LINUX_EINVAL;
++
+     /* SO_PASSCRED: emulated entirely in elfuse. Cache the flag value so
+      * getsockopt returns it and recvmsg knows to inject SCM_CREDENTIALS. macOS
+      * has no equivalent. Do not forward.
+@@ -1451,7 +1474,8 @@ int64_t sys_setsockopt(guest_t *g,
+         }
+         return 0;
+     }
+-    if (level == LINUX_IPPROTO_IP && optname == LINUX_IP_RECVERR) {
++    if ((level == LINUX_IPPROTO_IP && optname == LINUX_IP_RECVERR) ||
++        (level == LINUX_IPPROTO_IPV6 && optname == LINUX_IPV6_RECVERR)) {
+         /* No macOS equivalent for the Linux extended-error queue. Accept and
+          * discard; the queue stays empty, so subsequent recvmsg with
+          * MSG_ERRQUEUE returns -EAGAIN as Linux would for a quiescent
+@@ -1464,7 +1488,9 @@ int64_t sys_setsockopt(guest_t *g,
+         int value = 0;
+         if (guest_read_small(g, optval_gva, &value, optlen) < 0)
+             return -LINUX_EFAULT;
+-        (void) value;
++        net_socket_cache_set_index(fd, level == LINUX_IPPROTO_IP
++                                       ? SOCK_OPT_IP_RECVERR
++                                       : SOCK_OPT_IPV6_RECVERR, value != 0);
+         return 0;
+     }
+ 
+@@ -1530,8 +1556,23 @@ setsockopt_translated:
+          * IP_RECVTOS). The value has already been zero-extended into an int, so
+          * always call the host with sizeof(int).
+          */
+-        if (setsockopt(host_ref.fd, mac_level, mac_optname, &value,
+-                       sizeof(value)) < 0) {
++        bool multicast_byte = level == LINUX_IPPROTO_IP &&
++            (optname == LINUX_IP_MULTICAST_TTL ||
++             optname == LINUX_IP_MULTICAST_LOOP);
++        if (multicast_byte && optname == LINUX_IP_MULTICAST_TTL) {
++            if (value == -1)
++                value = 1;
++            if (value < 0 || value > 255) {
++                host_fd_ref_close(&host_ref);
++                return -LINUX_EINVAL;
++            }
++        }
++        uint8_t byte_value = (uint8_t) value;
++        const void *host_value = multicast_byte ? (const void *) &byte_value
++                                               : (const void *) &value;
++        socklen_t host_len = multicast_byte ? sizeof(byte_value) : sizeof(value);
++        if (setsockopt(host_ref.fd, mac_level, mac_optname, host_value,
++                       host_len) < 0) {
+             log_debug("setsockopt(fd=%d, level=%d/%d, opt=%d/%d, len=%u): %s",
+                       fd, level, mac_level, optname, mac_optname, optlen,
+                       strerror(errno));
+@@ -1632,8 +1673,7 @@ int64_t sys_getsockopt(guest_t *g,
+         return 0;
+     }
+ 
+-    if (level == LINUX_IPPROTO_IP &&
+-        (optname == LINUX_IP_MTU_DISCOVER || optname == LINUX_IP_RECVERR)) {
++    if (level == LINUX_IPPROTO_IP && optname == LINUX_IP_MTU_DISCOVER) {
+         if (!net_socket_fd_is_valid(fd))
+             return -LINUX_EBADF;
+         if (guest_optlen >= sizeof(int)) {
+@@ -1654,6 +1694,20 @@ int64_t sys_getsockopt(guest_t *g,
+         return 0;
+     }
+ 
++    if ((level == LINUX_IPPROTO_IP && optname == LINUX_IP_RECVERR) ||
++        (level == LINUX_IPPROTO_IPV6 && optname == LINUX_IPV6_RECVERR)) {
++        if (!net_socket_fd_is_valid(fd))
++            return -LINUX_EBADF;
++        int value = 0;
++        (void) net_socket_cached_int_get(fd, level, optname, &value);
++        uint32_t size = ip_copyval_clamp(level, guest_optlen, value, sizeof(value));
++        uint32_t copied = sockopt_write_len(size, guest_optlen);
++        if ((copied && guest_write_small(g, optval_gva, &value, copied) < 0) ||
++            guest_write_small(g, optlen_gva, &size, sizeof(size)) < 0)
++            return -LINUX_EFAULT;
++        return 0;
++    }
++
+     if (socket_opt_uses_small_int(level, optname)) {
+         int value = 0;
+         if (net_socket_cached_int_get(fd, level, optname, &value)) {
+@@ -1721,6 +1775,13 @@ getsockopt_translated:
+         }
+ 
+         actual_len = used_cache ? sizeof(int) : (uint32_t) mac_optlen;
++        /* Darwin returns a byte for these options; Linux returns an int when
++         * the caller provided enough space, or a byte for short buffers.
++         */
++        if (level == LINUX_IPPROTO_IP &&
++            (optname == LINUX_IP_MULTICAST_TTL ||
++             optname == LINUX_IP_MULTICAST_LOOP))
++            actual_len = sizeof(int);
+         actual_len = ip_copyval_clamp(level, guest_optlen, value, actual_len);
+         write_len = sockopt_write_len(actual_len, guest_optlen);
+         if (write_len > 0 &&
+diff --git a/src/syscall/net.h b/src/syscall/net.h
+index 122a428..216f885 100644
+--- a/src/syscall/net.h
++++ b/src/syscall/net.h
+@@ -116,7 +116,12 @@ typedef struct {
+ #define LINUX_IP_RECVERR 11
+ #define LINUX_IP_RECVTTL 12
+ #define LINUX_IP_RECVTOS 13
++#define LINUX_IP_MULTICAST_TTL 33
++#define LINUX_IP_MULTICAST_LOOP 34
++#define LINUX_IP_ADD_MEMBERSHIP 35
++#define LINUX_IP_DROP_MEMBERSHIP 36
+ #define LINUX_IPV6_V6ONLY 26
++#define LINUX_IPV6_RECVERR 25
+ 
+ /* Linux msghdr (aarch64). */
+ typedef struct {
+diff --git a/tests/test-elf-headers-host.c b/tests/test-elf-headers-host.c
+index adffc47..caa20a7 100644
+--- a/tests/test-elf-headers-host.c
++++ b/tests/test-elf-headers-host.c
+@@ -456,6 +456,39 @@ static void test_placement(void)
+                               0x3000));
+ }
+ 
++static void test_dynamic_tags(void)
++{
++    image_t img;
++    elf_info_t info;
++    image_init(&img, ET_DYN);
++    image_add_load(&img, 0x1000, 256, 256);
++    elf64_phdr_t *ph = image_add_ph(&img, PT_DYNAMIC);
++    ph->p_offset = DATA_OFF;
++    ph->p_filesz = 32;
++    uint64_t entries[4] = {22, 0, 0, 0};
++    memcpy(img.data, entries, sizeof(entries));
++    current = "DT_TEXTREL is identified";
++    CHECK(parse(&img, &info));
++    CHECK(info.has_text_relocations);
++    entries[0] = 30;
++    entries[1] = 4;
++    memcpy(img.data, entries, sizeof(entries));
++    current = "DF_TEXTREL is identified";
++    CHECK(parse(&img, &info));
++    CHECK(info.has_text_relocations);
++    entries[1] = 0;
++    memcpy(img.data, entries, sizeof(entries));
++    current = "ordinary dynamic flags remain loadable";
++    CHECK(parse(&img, &info));
++    CHECK(!info.has_text_relocations);
++    ph->p_filesz = 16;
++    current = "unterminated dynamic table rejected";
++    CHECK(!parse(&img, &info));
++    ph->p_offset = UINT64_MAX;
++    current = "dynamic table overflow rejected";
++    CHECK(!parse(&img, &info));
++}
++
+ int main(void)
+ {
+     test_baseline();
+@@ -466,6 +499,7 @@ int main(void)
+     test_mapper_ignores_segment_order();
+     test_interp_loadable();
+     test_placement();
++    test_dynamic_tags();
+ 
+     return host_summary("test-elf-headers-host");
+ }
+diff --git a/src/core/text-integrity.c b/src/core/text-integrity.c
+new file mode 100644
+index 0000000..869d26c
+--- /dev/null
++++ b/src/core/text-integrity.c
+@@ -0,0 +1,103 @@
++/*
++ * Optional main-ELF/interpreter integrity diagnostic. Snapshots come from the
++ * input files, not guest memory. No guest writes or instruction substitution.
++ * This checks two points in time, not transient writes between them; libraries
++ * subsequently loaded through mmap are not covered by this diagnostic.
++ */
++#include <errno.h>
++#include <fcntl.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++#include "core/text-integrity.h"
++
++#define TEXT_SNAPSHOT_LIMIT (256U * 1024U * 1024U)
++
++bool text_integrity_add(text_integrity_t *check,
++                        const elf_info_t *info,
++                        uint64_t base,
++                        const char *path)
++{
++    if (info->has_text_relocations || info->num_segments < 0 ||
++        info->num_segments > ELF_MAX_SEGMENTS || check->total > TEXT_SNAPSHOT_LIMIT)
++        return false;
++    int fd = open(path, O_RDONLY | O_CLOEXEC);
++    if (fd < 0)
++        return false;
++    bool ok = true;
++    for (int i = 0; i < info->num_segments; i++) {
++        const elf_segment_t *seg = &info->segments[i];
++        if (!(seg->flags & PF_X))
++            continue;
++        if ((seg->flags & PF_W) || seg->filesz > seg->memsz ||
++            seg->memsz > TEXT_SNAPSHOT_LIMIT - check->total ||
++            base > UINT64_MAX - seg->gpa ||
++            base + seg->gpa > UINT64_MAX - seg->memsz ||
++            seg->offset > INT64_MAX ||
++            seg->filesz > (uint64_t) INT64_MAX - seg->offset ||
++            check->count >= 2 * ELF_MAX_SEGMENTS) {
++            ok = false;
++            break;
++        }
++        if (!seg->memsz)
++            continue;
++        unsigned char *bytes = calloc(1, (size_t) seg->memsz);
++        if (!bytes) {
++            ok = false;
++            break;
++        }
++        uint64_t done = 0;
++        while (done < seg->filesz) {
++            ssize_t count = pread(fd, bytes + done,
++                                  (size_t) (seg->filesz - done),
++                                  (off_t) (seg->offset + done));
++            if (count < 0 && errno == EINTR)
++                continue;
++            if (count <= 0) {
++                ok = false;
++                break;
++            }
++            done += (uint64_t) count;
++        }
++        if (!ok) {
++            free(bytes);
++            break;
++        }
++        check->segments[check->count++] = (text_snapshot_t) {
++            .address = base + seg->gpa,
++            .size = (size_t) seg->memsz,
++            .bytes = bytes,
++        };
++        check->total += (size_t) seg->memsz;
++    }
++    close(fd);
++    return ok;
++}
++
++bool text_integrity_verify(const text_integrity_t *check, const guest_t *g)
++{
++    unsigned char buffer[4096];
++    if (!check->count)
++        return false;
++    for (size_t i = 0; i < check->count; i++) {
++        const text_snapshot_t *seg = &check->segments[i];
++        for (size_t offset = 0; offset < seg->size;) {
++            size_t count = seg->size - offset;
++            if (count > sizeof(buffer))
++                count = sizeof(buffer);
++            if (guest_read(g, seg->address + offset, buffer, count) < 0 ||
++                memcmp(buffer, seg->bytes + offset, count) != 0)
++                return false;
++            offset += count;
++        }
++    }
++    return true;
++}
++
++void text_integrity_destroy(text_integrity_t *check)
++{
++    for (size_t i = 0; i < check->count; i++)
++        free(check->segments[i].bytes);
++    memset(check, 0, sizeof(*check));
++}
+diff --git a/src/core/text-integrity.h b/src/core/text-integrity.h
+new file mode 100644
+index 0000000..a1b3067
+--- /dev/null
++++ b/src/core/text-integrity.h
+@@ -0,0 +1,27 @@
++/* Local diagnostic: compare guest executable bytes without modifying them. */
++#pragma once
++
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++
++#include "core/elf.h"
++#include "core/guest.h"
++
++typedef struct {
++    uint64_t address;
++    size_t size;
++    unsigned char *bytes;
++} text_snapshot_t;
++
++typedef struct {
++    text_snapshot_t segments[2 * ELF_MAX_SEGMENTS];
++    size_t count, total;
++} text_integrity_t;
++
++bool text_integrity_add(text_integrity_t *check,
++                        const elf_info_t *info,
++                        uint64_t base,
++                        const char *path);
++bool text_integrity_verify(const text_integrity_t *check, const guest_t *g);
++void text_integrity_destroy(text_integrity_t *check);
