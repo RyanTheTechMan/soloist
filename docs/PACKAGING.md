@@ -5,8 +5,9 @@ client. Its nested helper freezes the existing Python supervisor/control tools
 and bundles elfuse, a production Linux library sysroot, a CA store and private
 macOS PulseAudio dependencies. Running it does not require a compiler, Homebrew,
 Python installation or a checkout. The official Soloist executable and user's
-API-key file are deliberately separate inputs. After selection, the executable
+API key are deliberately separate inputs. After selection, the executable
 is installed under private Application Support storage, never into the bundle.
+The graphical app stores the key in macOS Keychain.
 See [Quick start](../packaging/QUICKSTART.md).
 
 This local ad-hoc-signed preview targets Apple Silicon/macOS 27. Public signing,
@@ -90,24 +91,30 @@ that public redistribution obligations, including source availability, are met.
 ## Client integration and writable data
 
 The independent future client can locate the nested `runtime-cli` and use
-`describe`, `configure`, `installation`, `run`, `endpoint`, `status` and `control`. `describe`
+`describe`, `credential`, `configure`, `installation`, `run`, `endpoint`, `status`
+and `control`. `describe`
 reports integration version 1 and supported command names. Receiver lifecycle
-belongs to its caller; closing the launcher stops its receiver. No login item,
-system service or hosted fork backend is installed.
+belongs to its caller; closing the launcher stops its receiver. The optional
+Run on login setting uses macOS ServiceManagement for the main app, not a
+global system service. No hosted fork backend is installed.
 
 Packaged state/cache defaults to `~/Library/Application Support/Soloist Runtime/`.
 Development runs retain their repository-local profile. An absolute
 `SOLOIST_RUNTIME_HOME` overrides the CLI profile for isolated tests. No runtime
 writes belong in the application bundle. `configure` atomically copies the
 user-selected executable to private profile storage after validating its
-architecture and version, and records its expected 90-day expiry. It stores
-only the external path to the key file, not the key. `installation` reports
+architecture and version, and records its expected 90-day expiry. The GUI
+stores the user's key in macOS Keychain through the packaged helper and
+configures `credential_store: keyring`; it does not put the key in preferences,
+configuration JSON, logs or host argv. At runtime the key is passed through an
+inherited, already-unlinked private descriptor. The legacy `--api-key-file`
+option remains available for source/CLI use. `installation` reports
 build and expiry metadata without account data. Spotify receives authentication
 requests on startup.
 
 Packaged `run` and the launcher default to Spotify Connect with local WebSocket
 off. `run --websocket on` enables a loopback-only, unauthenticated API for
-trusted local clients. The launcher's checkbox provides the same opt-in. Local
+same-Mac clients. The launcher's preference checkbox provides the same opt-in. Local
 health checking falls back to the private audio process when WebSocket is off;
 the richer API responsiveness check requires it to be on.
 

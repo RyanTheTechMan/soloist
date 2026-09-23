@@ -13,6 +13,11 @@ not Spotify Soloist or a Linux operating-system image.
 - PulseAudio and dependencies are installed separately by Homebrew; they are
   not committed here. Native audio uses PulseAudio's CoreAudio output module.
 - The optional Python control/observation tools use websockets (BSD-3-Clause).
+- The packaged credential helper uses [keyring](https://github.com/jaraco/keyring)
+  (MIT). Its macOS backend stores the user's API key in macOS Keychain. Keyring's
+  installed `jaraco.classes`, `jaraco.context`, `jaraco.functools` and
+  `more-itertools` dependencies are MIT-licensed. Linux and Windows keyring
+  backends are a portability direction, not validated runtime targets yet.
 - Spotify Soloist remains a separately obtained proprietary executable. Follow
   Spotify's official download and license instructions; do not bundle it into
   this repository or redistribute it with the compatibility runtime.

@@ -55,6 +55,7 @@ jobs:
         run: |
           python scripts/test-package.py
           python scripts/test-receiver.py
+          python scripts/test-lifecycle.py
           python scripts/test-client-api.py
           python scripts/test-playback-cycles.py
       - name: Build and audit app

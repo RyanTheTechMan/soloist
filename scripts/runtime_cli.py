@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 import client_api
+import credentials
 import receiver
 from native_audio import native_audio
 from observe import safe_event
@@ -59,6 +60,7 @@ def installation():
         return {"configured": False}
     settings = json.loads(CONFIG.read_text())
     result = {"configured": True, "executable_installed": Path(settings["soloist"]).is_file(),
+              "credential_store": settings.get("credential_store", "external-file"),
               "soloist_version": settings.get("soloist_version"),
               "build_at": settings.get("build_at"),
               "expected_expiry_at": settings.get("expected_expiry_at")}
@@ -70,17 +72,20 @@ def installation():
     return result
 
 
-def configure(engine, key):
+def configure(engine, key=None, keychain=False):
     engine = validate_engine(engine)
-    key = key.expanduser().resolve(strict=True)
-    info = key.stat()
-    if not key.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        raise ConfigurationError("API-key file must be owned by you with owner-only permissions (chmod 600)")
-    with key.open("rb") as stream:
-        raw = stream.read(4098)
-    secret = raw.strip()
-    if len(raw) > 4097 or not secret or len(secret) > 4096 or b"\0" in secret or b"\n" in secret or b"\r" in secret:
-        raise ConfigurationError("API-key file must contain one nonempty key")
+    if keychain:
+        credentials.load()
+    else:
+        key = key.expanduser().resolve(strict=True)
+        info = key.stat()
+        if not key.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ConfigurationError("API-key file must be owned by you with owner-only permissions (chmod 600)")
+        with key.open("rb") as stream:
+            raw = stream.read(4098)
+        secret = raw.strip()
+        if len(raw) > 4097 or not secret or len(secret) > 4096 or b"\0" in secret or b"\n" in secret or b"\r" in secret:
+            raise ConfigurationError("API-key file must contain one nonempty key")
     DATA.mkdir(parents=True, exist_ok=True, mode=0o700)
     DATA.chmod(0o700)
     STATE.mkdir(exist_ok=True, mode=0o700)
@@ -104,7 +109,11 @@ def configure(engine, key):
             temporary = None
         else:
             metadata = engine_metadata(ENGINE)
-        settings = {"soloist": str(ENGINE), "api_key_file": str(key), **metadata}
+        settings = {"soloist": str(ENGINE), **metadata}
+        if keychain:
+            settings["credential_store"] = "keyring"
+        else:
+            settings["api_key_file"] = str(key)
         receiver.private_text(CONFIG, json.dumps(settings) + "\n")
     finally:
         if temporary is not None and os.path.exists(temporary):
@@ -156,7 +165,11 @@ def main(argv=None):
     sub.add_parser("installation", help="Show installed build and expected expiry; no account data")
     setup = sub.add_parser("configure", help="Copy selected official executable into private app data")
     setup.add_argument("--soloist", type=Path, required=True)
-    setup.add_argument("--api-key-file", type=Path, required=True)
+    secret_source = setup.add_mutually_exclusive_group(required=True)
+    secret_source.add_argument("--api-key-file", type=Path)
+    secret_source.add_argument("--keychain", action="store_true")
+    credential = sub.add_parser("credential", help="Manage the system credential store without argv secrets")
+    credential.add_argument("action", choices=("status", "store"))
     check = sub.add_parser("doctor", help="Credential-free runtime and optional native audio check")
     check.add_argument("--soloist", type=Path)
     check.add_argument("--audio", action="store_true")
@@ -169,9 +182,20 @@ def main(argv=None):
     control.add_argument("--enabled", choices=("on", "off"))
     args = parser.parse_args(argv)
     if args.operation == "configure":
-        configure(args.soloist, args.api_key_file)
+        configure(args.soloist, args.api_key_file, args.keychain)
     elif args.operation == "doctor":
         return doctor(args.soloist, args.audio)
+    elif args.operation == "credential":
+        if args.action == "store":
+            if sys.stdin.isatty():
+                from getpass import getpass
+                secret = getpass("Soloist API key: ")
+            else:
+                secret = sys.stdin.buffer.read(4098)
+            credentials.save(secret)
+            print(json.dumps({"stored": True}))
+        else:
+            print(json.dumps({"stored": credentials.exists()}))
     elif args.operation == "installation":
         print(json.dumps(installation()))
     elif args.operation == "describe":
@@ -202,6 +226,6 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except Exception as error:
         # Fixed validation messages are safe; arbitrary I/O/server text isn't.
-        message = str(error) if type(error) is ConfigurationError else "Operation failed; private details withheld"
+        message = str(error) if type(error) in (ConfigurationError, credentials.CredentialError) else "Operation failed; private details withheld"
         print(json.dumps({"error_type": type(error).__name__, "message": message}), file=sys.stderr)
         raise SystemExit(1)

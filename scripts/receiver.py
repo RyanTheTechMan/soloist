@@ -1,6 +1,7 @@
 """Supervised HVF Soloist receiver. No API key in host argv; filtered logs only."""
 import argparse
 import asyncio
+import contextlib
 import fcntl
 import json
 import os
@@ -13,7 +14,9 @@ import threading
 import time
 import websockets
 
+import credentials
 from paths import BUNDLED, STATE, CACHE, RUNTIME, SYSROOT, CERTIFICATES, configured_path
+from paths import CONFIG
 from lifecycle import Exit, retry_delay, run_child
 PUBLIC_ERRORS = set()
 from native_audio import native_audio
@@ -139,7 +142,18 @@ def soloist_command(args, state, cache, engine, key_path, pulse_root):
 
 
 def run_session(args, state, cache, engine, key_path, secret, stop, deadline, attempt):
-    with native_audio() as audio_env:
+    with contextlib.ExitStack() as stack, native_audio() as audio_env:
+        inherited = ()
+        if key_path is None:
+            # elfuse reads an owner-only regular file before guest startup. An
+            # inherited, already-unlinked TemporaryFile avoids a persistent
+            # plaintext API-key file and never places the key in host argv.
+            temporary = stack.enter_context(tempfile.TemporaryFile())
+            temporary.write(secret)
+            temporary.flush()
+            temporary.seek(0)
+            inherited = (temporary.fileno(),)
+            key_path = Path("/dev/fd") / str(temporary.fileno())
         pulse_root = Path(audio_env["PULSE_RUNTIME_PATH"]).resolve()
         pulse_hint = state / "audio.path"
         pid_file = state / "receiver.pid"
@@ -161,6 +175,7 @@ def run_session(args, state, cache, engine, key_path, secret, stop, deadline, at
             print("RECEIVER: started; recovery attempt", attempt, flush=True)
         try:
             result = run_child(command, environment, stop, deadline, consume, started=started,
+                               pass_fds=inherited,
                                health=lambda: audio_env.alive() and
                                (args.websocket == "off" or asyncio.run(api_health(state))))
             summary = dict(exit_code=result.code, reason=result.reason, forced=result.forced,
@@ -205,13 +220,15 @@ def main(argv=None):
         for name in ("ws.addr", "ws.port"):
             (state / name).unlink(missing_ok=True)
     engine = configured_path("soloist", args.soloist)
-    key_path = configured_path("api_key_file", args.api_key_file)
-    if key_path.stat().st_uid != os.getuid() or key_path.stat().st_mode & 0o077:
+    settings = json.loads(CONFIG.read_text()) if CONFIG.is_file() else {}
+    use_keyring = args.api_key_file is None and settings.get("credential_store") == "keyring"
+    key_path = None if use_keyring else configured_path("api_key_file", args.api_key_file)
+    if key_path is not None and (key_path.stat().st_uid != os.getuid() or key_path.stat().st_mode & 0o077):
         raise SystemExit("The API key file must be owned by you and inaccessible to other users (chmod 600)")
     global PUBLIC_ERRORS
     PUBLIC_ERRORS = {part.decode("ascii") for part in engine.read_bytes().split(b"\0")
                      if 3 <= len(part) <= 120 and all(32 <= value < 127 for value in part)}
-    secret = key_path.read_bytes().strip()
+    secret = credentials.load().encode("utf-8") if use_keyring else key_path.read_bytes().strip()
     if not secret or len(secret) > 4096:
         raise SystemExit("Invalid key file length")
     if not BUNDLED:

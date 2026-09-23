@@ -10,11 +10,11 @@ FIXTURE = ROOT / "build/private-argument.elf"
 PUBLIC = b"public-fixture-value"
 
 
-def run(path, expected, flags=()):
+def run(path, expected, flags=(), pass_fds=()):
     command = [str(ELFUSE), "--no-rosetta", "--clear-env", *flags,
                "--append-arg-file", str(path), "--", str(FIXTURE)]
     assert PUBLIC.decode() not in " ".join(command)
-    result = subprocess.run(command, env={"PATH": os.defpath},
+    result = subprocess.run(command, env={"PATH": os.defpath}, pass_fds=pass_fds,
                             capture_output=True, timeout=10)
     assert (result.returncode == 0) == expected, "Unexpected argument-loader status"
     assert PUBLIC not in result.stdout + result.stderr, "Argument appeared in diagnostics"
@@ -43,4 +43,9 @@ with tempfile.TemporaryDirectory(prefix="soloist-argument-test-") as directory:
     fifo = Path(directory) / "fifo"
     os.mkfifo(fifo, 0o600)
     run(fifo, False)
-print("PASS: 13 private-argument cases; synthetic value absent from host argv and logs")
+    with tempfile.TemporaryFile() as temporary:
+        temporary.write(PUBLIC)
+        temporary.flush()
+        temporary.seek(0)
+        run("/dev/fd/" + str(temporary.fileno()), True, pass_fds=(temporary.fileno(),))
+print("PASS: 14 private-argument cases; synthetic value absent from host argv and logs")

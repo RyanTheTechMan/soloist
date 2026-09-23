@@ -146,7 +146,8 @@ def main():
     run(sys.executable, "-m", "PyInstaller", "--onedir", "--windowed", "--noupx", "--target-arch", "arm64",
         "--osx-bundle-identifier", "local.soloistcompat.helper",
         "--name", "runtime-cli", "--distpath", work / "frozen", "--workpath", work / "freeze-work",
-        "--specpath", work, "--copy-metadata", "websockets", "--paths", ROOT / "scripts",
+        "--specpath", work, "--copy-metadata", "websockets",
+        "--hidden-import", "keyring.backends.macOS", "--paths", ROOT / "scripts",
         ROOT / "scripts/runtime_cli.py")
     app = work / (args.name + ".app")
     contents = app / "Contents"
@@ -186,7 +187,8 @@ def main():
     macos = contents / "MacOS"
     macos.mkdir()
     run("xcrun", "clang", "-fobjc-arc", "-Wall", "-Wextra", "-Werror", "-arch", "arm64",
-        "-mmacosx-version-min=27.0", "-framework", "AppKit", ROOT / "packaging/launcher.m",
+        "-mmacosx-version-min=27.0", "-framework", "AppKit",
+        "-framework", "ServiceManagement", ROOT / "packaging/launcher.m",
         "-o", macos / "SoloistRuntime")
     info = {"CFBundleExecutable": "SoloistRuntime", "CFBundleIdentifier": "local.soloistcompat.runtime",
             "CFBundleName": "Soloist Runtime", "CFBundleDisplayName": "Soloist Runtime",

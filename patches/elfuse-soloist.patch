@@ -170,7 +170,7 @@ index 1f82b0c..618c203 100644
  #include <unistd.h>
  
  #include "utils.h"
-@@ -51,6 +53,49 @@
+@@ -51,6 +53,62 @@
  
  extern char **environ;
  
@@ -179,7 +179,20 @@ index 1f82b0c..618c203 100644
 + */
 +static char *read_private_argument(const char *path)
 +{
-+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
++    /* /dev/fd/N may name an inherited, already-unlinked private file.
++     * It is the sole permitted symlink form; fstat still checks its owner,
++     * mode, regular-file type and size below. */
++    bool inherited_fd = strncmp(path, "/dev/fd/", 8) == 0;
++    if (inherited_fd) {
++        const char *digit = path + 8;
++        if (!*digit)
++            return NULL;
++        for (; *digit; digit++)
++            if (*digit < '0' || *digit > '9')
++                return NULL;
++    }
++    int flags = O_RDONLY | O_CLOEXEC | O_NONBLOCK;
++    int fd = open(path, inherited_fd ? flags : flags | O_NOFOLLOW);
 +    if (fd < 0)
 +        return NULL;
 +    struct stat st;

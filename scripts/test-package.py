@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import runtime_cli
+import credentials
 
 
 class Tests(unittest.TestCase):
@@ -64,6 +65,28 @@ class Tests(unittest.TestCase):
         self.assertEqual(installed.read_bytes(), b"previous")
         self.assertFalse(config.exists())
         self.assertEqual(list(installed.parent.iterdir()), [installed])
+
+    def test_keychain_configuration_contains_no_key_or_key_file_path(self):
+        profile = self.root / "profile"
+        installed = profile / "engine/soloist"
+        config = profile / "state/installation.json"
+        metadata = {"soloist_version": "1.2.3", "build_at": "2026-09-01T00:00:00Z",
+                    "expected_expiry_at": "2026-11-30T00:00:00Z"}
+        with patch.multiple(runtime_cli, DATA=profile, STATE=config.parent, CONFIG=config, ENGINE=installed), \
+                patch.object(runtime_cli, "engine_metadata", return_value=metadata), \
+                patch.object(credentials, "load", return_value="synthetic-test-key"):
+            with contextlib.redirect_stdout(io.StringIO()) as output:
+                runtime_cli.configure(self.engine, keychain=True)
+        values = json.loads(config.read_text())
+        self.assertEqual(values["credential_store"], "keyring")
+        self.assertNotIn("api_key_file", values)
+        self.assertNotIn("synthetic-test-key", config.read_text() + output.getvalue())
+
+    def test_key_validation_rejects_newlines_and_whitespace(self):
+        for value in ("", " key", "key ", "one\ntwo", "one\rtwo", "x" * 4097):
+            with self.assertRaises(credentials.CredentialError):
+                credentials.validate(value)
+        self.assertEqual(credentials.validate("synthetic-test-key"), "synthetic-test-key")
 
     def test_version_metadata_and_expiry(self):
         sample = b"INTEGRITY: executable-byte preflight passed\nsoloist 1.3.8.36 build 1789106507 (linux/aarch64)\nINTEGRITY: executable-byte exit comparison passed\n"

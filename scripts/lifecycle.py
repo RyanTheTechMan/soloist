@@ -14,10 +14,11 @@ class Exit:
 
 
 def run_child(command, environment, stop, deadline, consume, *, started=None,
-              health=None, startup_grace=30, health_interval=10, shutdown_grace=15):
+              health=None, pass_fds=(), startup_grace=30, health_interval=10, shutdown_grace=15):
     """Never restart here. Caller owns retry policy and scoped sidecar lifetime."""
     with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
-                          stderr=subprocess.STDOUT, start_new_session=True) as child:
+                          stderr=subprocess.STDOUT, start_new_session=True,
+                          pass_fds=pass_fds) as child:
         pending = b""
         reason = "exit"
         stopping_at = None
