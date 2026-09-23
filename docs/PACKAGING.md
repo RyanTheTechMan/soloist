@@ -96,7 +96,8 @@ and `control`. `describe`
 reports integration version 1 and supported command names. Receiver lifecycle
 belongs to its caller; closing the launcher stops its receiver. The optional
 Run on login setting uses macOS ServiceManagement for the main app, not a
-global system service. No hosted fork backend is installed.
+global system service. Auto start on launch is a separate app preference. No
+hosted fork backend is installed.
 
 Packaged state/cache defaults to `~/Library/Application Support/Soloist Runtime/`.
 Development runs retain their repository-local profile. An absolute

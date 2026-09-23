@@ -23,8 +23,10 @@ starting if you want a same-Mac client to use Soloist's documented API.
 It binds only to `127.0.0.1` on an assigned port. The API has no client
 authentication, so do not forward it to a browser, LAN or Internet endpoint.
 The checkbox is saved in app preferences. **Run on login** registers the app
-with macOS Login Items; macOS may require approval in System Settings. When
-enabled, opening the app starts the configured receiver automatically.
+with macOS Login Items; macOS may require approval in System Settings. It only
+opens the app. The separate **Auto start on launch** preference starts the
+configured receiver whenever the app opens, including at login if both options
+are enabled.
 
 Close the app or click Stop to shut down the receiver. No global audio daemon
 is installed. This package contains the compatibility runtime and

@@ -5,7 +5,7 @@ and supply your own developer API key separately. The launcher saves the key
 in macOS Keychain and installs a
 private copy of the selected executable and shows its expected build expiry.
 It defaults to Spotify Connect only; local WebSocket control is opt-in and
-loopback-only. Run on login is optional.
+loopback-only. Run on login and Auto start on launch are independent options.
 
 This app is ad-hoc signed and not notarized. The graphical setup has an unresolved
 first-run file access issue; the bundled command-line setup is the verified path.

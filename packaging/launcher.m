@@ -12,6 +12,7 @@ static NSString *const KeyMask = @"••••••••";
 @property NSTextField *expiry;
 @property NSButton *websocket;
 @property NSButton *runOnLogin;
+@property NSButton *autoStartOnLaunch;
 @property NSButton *start;
 @property NSButton *stop;
 @property NSTask *task;
@@ -101,6 +102,10 @@ static NSString *const KeyMask = @"••••••••";
                              loginStatus == SMAppServiceStatusRequiresApproval)
         ? NSControlStateValueOn : NSControlStateValueOff;
     [stack addArrangedSubview:self.runOnLogin];
+    self.autoStartOnLaunch = [NSButton checkboxWithTitle:@"Auto start on launch" target:self action:@selector(autoStartChanged:)];
+    self.autoStartOnLaunch.state = [[NSUserDefaults standardUserDefaults] boolForKey:@"autoStartOnLaunch"]
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    [stack addArrangedSubview:self.autoStartOnLaunch];
     self.start = [NSButton buttonWithTitle:@"Start" target:self action:@selector(start:)];
     self.stop = [NSButton buttonWithTitle:@"Stop" target:self action:@selector(stop:)];
     self.stop.enabled = NO;
@@ -111,7 +116,7 @@ static NSString *const KeyMask = @"••••••••";
     NSDictionary *settings = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     if ([settings[@"soloist"] isKindOfClass:NSString.class]) self.engine.stringValue = settings[@"soloist"];
     [self refreshExpiry];
-    self.autoStart = loginStatus == SMAppServiceStatusEnabled && self.engine.stringValue.length > 0;
+    self.autoStart = self.autoStartOnLaunch.state == NSControlStateValueOn && self.engine.stringValue.length > 0;
     if (loginStatus == SMAppServiceStatusRequiresApproval)
         self.status.stringValue = @"Approve Run on login in System Settings → Login Items.";
     [self refreshCredentialStatus];
@@ -239,6 +244,11 @@ static NSString *const KeyMask = @"••••••••";
     (void)sender;
     [[NSUserDefaults standardUserDefaults] setBool:self.websocket.state == NSControlStateValueOn forKey:@"enableWebSocket"];
     if (self.task) self.status.stringValue = @"WebSocket setting saved; restart the receiver to apply it.";
+}
+- (void)autoStartChanged:(id)sender {
+    (void)sender;
+    [[NSUserDefaults standardUserDefaults] setBool:self.autoStartOnLaunch.state == NSControlStateValueOn
+                                            forKey:@"autoStartOnLaunch"];
 }
 - (void)loginChanged:(id)sender {
     (void)sender;

@@ -64,7 +64,8 @@ notarization or API access-control claim is made.
 See [package build/integration instructions](docs/PACKAGING.md) and
 [local quick start](packaging/QUICKSTART.md).
 The launcher defaults to Spotify Connect only, with an opt-in loopback
-WebSocket for local clients and optional Run on login. The build workflow can produce a draft
+WebSocket for local clients and separate Run on login / Auto start on launch
+options. The build workflow can produce a draft
 GitHub Release from a manually supplied version tag; no official executable or
 account key enters CI.
 
