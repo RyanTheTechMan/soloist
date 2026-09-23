@@ -119,6 +119,14 @@ same-Mac clients. The launcher's preference checkbox provides the same opt-in. L
 health checking falls back to the private audio process when WebSocket is off;
 the richer API responsiveness check requires it to be on.
 
+The launcher persists a Spotify Connect device name and an optional CoreAudio
+output UID in app preferences. Without a selected UID, the private PulseAudio
+server maps macOS's default output device by CoreAudio object ID, rather than
+using its first detected sink. The receiver checks for changes to the preferred
+or system-default output during health checks and moves its stream when needed.
+`audio outputs` and `audio select [--uid UID]` expose the same output controls to
+other local clients without changing the system-wide audio device.
+
 The control endpoint remains unauthenticated loopback preview API. Packaging
 does not make it safe to expose to browsers or a LAN. See [local control](LOCAL_CONTROL.md)
 and [release gates](RELEASE_READINESS.md). The future client/runtime must preserve

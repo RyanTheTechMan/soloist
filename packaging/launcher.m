@@ -7,12 +7,14 @@ static NSString *const KeyMask = @"••••••••";
 @interface Launcher : NSObject <NSApplicationDelegate, NSTextFieldDelegate>
 @property NSWindow *window;
 @property NSTextField *engine;
+@property NSTextField *deviceName;
 @property NSTextField *key;
 @property NSTextField *status;
 @property NSTextField *expiry;
 @property NSButton *websocket;
 @property NSButton *runOnLogin;
 @property NSButton *autoStartOnLaunch;
+@property NSPopUpButton *audioOutput;
 @property NSButton *start;
 @property NSButton *stop;
 @property NSTask *task;
@@ -22,6 +24,7 @@ static NSString *const KeyMask = @"••••••••";
 @property BOOL pendingStart;
 @property BOOL autoStart;
 @property BOOL credentialEdited;
+@property BOOL receiverRunning;
 @end
 
 @implementation Launcher
@@ -42,7 +45,7 @@ static NSString *const KeyMask = @"••••••••";
     [actions addItemWithTitle:@"Quit Soloist Runtime" action:@selector(terminate:) keyEquivalent:@"q"];
     application.submenu = actions;
     NSApp.mainMenu = menu;
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 390)
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 450)
                                             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
                                               backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"Soloist Runtime";
@@ -65,6 +68,12 @@ static NSString *const KeyMask = @"••••••••";
     titleRow.spacing = 8;
     [stack addArrangedSubview:titleRow];
     [titleRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    self.deviceName = [NSTextField textFieldWithString:[[NSUserDefaults standardUserDefaults] stringForKey:@"deviceName"] ?: @"Soloist Runtime"];
+    self.deviceName.placeholderString = @"Name shown in Spotify Connect";
+    self.deviceName.accessibilityLabel = @"Spotify Connect device name";
+    self.deviceName.delegate = self;
+    [stack addArrangedSubview:self.deviceName];
+    [self.deviceName.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     self.engine = [NSTextField textFieldWithString:@""];
     self.engine.placeholderString = @"Linux ARM64 Soloist executable";
     self.engine.accessibilityLabel = @"Linux ARM64 Soloist executable";
@@ -85,6 +94,21 @@ static NSString *const KeyMask = @"••••••••";
     [stack addArrangedSubview:keyRow];
     [keyRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
     [getKey.widthAnchor constraintEqualToConstant:128].active = YES;
+    NSTextField *outputLabel = [self label:@"Audio output" size:13];
+    self.audioOutput = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    self.audioOutput.accessibilityLabel = @"Audio output";
+    [self.audioOutput setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [self.audioOutput addItemWithTitle:@"Loading outputs…"];
+    self.audioOutput.enabled = NO;
+    self.audioOutput.target = self;
+    self.audioOutput.action = @selector(audioOutputChanged:);
+    NSButton *refreshOutputs = [NSButton buttonWithTitle:@"Refresh" target:self action:@selector(refreshAudioOutputs:)];
+    NSStackView *outputRow = [NSStackView stackViewWithViews:@[outputLabel, self.audioOutput, refreshOutputs]];
+    outputRow.spacing = 8;
+    [stack addArrangedSubview:outputRow];
+    [outputRow.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    [outputLabel.widthAnchor constraintEqualToConstant:90].active = YES;
+    [refreshOutputs.widthAnchor constraintEqualToConstant:80].active = YES;
     self.status = [self label:@"Choose the official executable and enter your Soloist API key, then Start." size:13];
     [stack addArrangedSubview:self.status];
     [self.status.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
@@ -120,6 +144,7 @@ static NSString *const KeyMask = @"••••••••";
     if (loginStatus == SMAppServiceStatusRequiresApproval)
         self.status.stringValue = @"Approve Run on login in System Settings → Login Items.";
     [self refreshCredentialStatus];
+    [self refreshAudioOutputs:nil];
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activate];
@@ -177,6 +202,10 @@ static NSString *const KeyMask = @"••••••••";
         self.key.stringValue = @"";
 }
 - (void)controlTextDidEndEditing:(NSNotification *)notification {
+    if (notification.object == self.deviceName) {
+        [self saveDeviceName];
+        return;
+    }
     if (notification.object != self.key) return;
     NSString *value = self.key.stringValue;
     if (!value.length || [value isEqualToString:KeyMask]) {
@@ -184,6 +213,96 @@ static NSString *const KeyMask = @"••••••••";
         return;
     }
     [self saveKey:value];
+}
+- (BOOL)saveDeviceName {
+    NSString *name = [self.deviceName.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!name.length || name.length > 64 || [name rangeOfCharacterFromSet:NSCharacterSet.controlCharacterSet].location != NSNotFound) {
+        self.status.stringValue = @"Device name must be 1–64 printable characters.";
+        self.deviceName.stringValue = [[NSUserDefaults standardUserDefaults] stringForKey:@"deviceName"] ?: @"Soloist Runtime";
+        return NO;
+    }
+    self.deviceName.stringValue = name;
+    [[NSUserDefaults standardUserDefaults] setObject:name forKey:@"deviceName"];
+    if (self.receiverRunning) self.status.stringValue = @"Device name saved; restart the receiver to apply it.";
+    return YES;
+}
+- (void)refreshAudioOutputs:(id)sender {
+    (void)sender;
+    NSTask *task = [NSTask new];
+    task.executableURL = self.helper;
+    task.arguments = @[@"audio", @"outputs"];
+    NSPipe *output = [NSPipe pipe];
+    task.standardOutput = output;
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    task.terminationHandler = ^(NSTask *finished) {
+        NSData *data = [output.fileHandleForReading readDataToEndOfFile];
+        NSDictionary *reply = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (finished.terminationStatus != 0 || ![reply[@"outputs"] isKindOfClass:NSArray.class]) {
+                self.status.stringValue = @"Could not list macOS audio outputs. Refresh to retry.";
+                return;
+            }
+            NSString *savedUID = [[NSUserDefaults standardUserDefaults] stringForKey:@"audioOutputUID"] ?: @"";
+            NSString *savedName = [[NSUserDefaults standardUserDefaults] stringForKey:@"audioOutputName"] ?: @"device";
+            NSArray *devices = reply[@"outputs"];
+            NSString *defaultName = @"unavailable";
+            for (NSDictionary *device in devices)
+                if ([device[@"is_default"] boolValue]) defaultName = device[@"name"];
+            [self.audioOutput removeAllItems];
+            [self.audioOutput addItemWithTitle:[NSString stringWithFormat:@"System default (%@)", defaultName]];
+            self.audioOutput.lastItem.representedObject = @"";
+            BOOL found = !savedUID.length;
+            for (NSDictionary *device in devices) {
+                NSString *uid = device[@"uid"];
+                NSString *name = device[@"name"];
+                if (![uid isKindOfClass:NSString.class] || ![name isKindOfClass:NSString.class]) continue;
+                NSString *suffix = uid.length > 8 ? [uid substringFromIndex:uid.length - 8] : uid;
+                [self.audioOutput addItemWithTitle:[NSString stringWithFormat:@"%@ · %@", name, suffix]];
+                self.audioOutput.lastItem.representedObject = uid;
+                if ([uid isEqualToString:savedUID]) {
+                    [self.audioOutput selectItem:self.audioOutput.lastItem];
+                    found = YES;
+                }
+            }
+            if (!found) {
+                [self.audioOutput addItemWithTitle:[NSString stringWithFormat:@"Unavailable: %@ (using default)", savedName]];
+                self.audioOutput.lastItem.representedObject = savedUID;
+                [self.audioOutput selectItem:self.audioOutput.lastItem];
+            }
+            self.audioOutput.enabled = YES;
+        });
+    };
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error])
+        self.status.stringValue = @"Could not list macOS audio outputs. Refresh to retry.";
+}
+- (void)audioOutputChanged:(id)sender {
+    (void)sender;
+    NSString *uid = self.audioOutput.selectedItem.representedObject ?: @"";
+    [[NSUserDefaults standardUserDefaults] setObject:uid forKey:@"audioOutputUID"];
+    [[NSUserDefaults standardUserDefaults] setObject:self.audioOutput.selectedItem.title forKey:@"audioOutputName"];
+    if (!self.receiverRunning) {
+        self.status.stringValue = @"Audio output preference saved.";
+        return;
+    }
+    NSTask *task = [NSTask new];
+    task.executableURL = self.helper;
+    task.arguments = uid.length ? @[@"audio", @"select", @"--uid", uid] : @[@"audio", @"select"];
+    NSPipe *output = [NSPipe pipe];
+    task.standardOutput = output;
+    task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    task.terminationHandler = ^(NSTask *finished) {
+        NSData *data = [output.fileHandleForReading readDataToEndOfFile];
+        NSDictionary *reply = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.status.stringValue = finished.terminationStatus == 0
+                ? [NSString stringWithFormat:@"Audio routed to %@%@.", reply[@"name"] ?: @"selected output",
+                   [reply[@"fallback_to_default"] boolValue] ? @" (selected device unavailable; using default)" : @""]
+                : @"Could not switch audio output. Refresh the list or restart the receiver.";
+        });
+    };
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error]) self.status.stringValue = @"Could not switch audio output.";
 }
 - (void)saveKey:(NSString *)value {
     NSData *secret = [value dataUsingEncoding:NSUTF8StringEncoding];
@@ -288,6 +407,7 @@ static NSString *const KeyMask = @"••••••••";
 }
 - (void)start:(id)sender {
     (void)sender;
+    if (![self saveDeviceName]) return;
     if (self.savingKey) {
         self.pendingStart = YES;
         self.status.stringValue = @"Saving API key before starting…";
@@ -356,13 +476,16 @@ static NSString *const KeyMask = @"••••••••";
     [[NSUserDefaults standardUserDefaults] setBool:self.websocket.state == NSControlStateValueOn forKey:@"enableWebSocket"];
     NSTask *task = [NSTask new];
     task.executableURL = self.helper;
+    NSString *uid = [[NSUserDefaults standardUserDefaults] stringForKey:@"audioOutputUID"] ?: @"";
     task.arguments = @[@"run", @"--audio-latency-ms", @"100", @"--websocket",
-                       self.websocket.state == NSControlStateValueOn ? @"on" : @"off"];
+                       self.websocket.state == NSControlStateValueOn ? @"on" : @"off",
+                       @"--device-name", self.deviceName.stringValue, @"--audio-output-uid", uid];
     task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
     task.standardError = [NSFileHandle fileHandleWithNullDevice];
     task.terminationHandler = ^(NSTask *finished) {
         dispatch_async(dispatch_get_main_queue(), ^{
             self.task = nil;
+            self.receiverRunning = NO;
             self.start.enabled = YES;
             self.stop.enabled = NO;
             self.status.stringValue = finished.terminationStatus == 0 ? @"Receiver stopped." : @"Receiver stopped after an error. Run the bundled doctor command for diagnostics.";
@@ -378,6 +501,7 @@ static NSString *const KeyMask = @"••••••••";
         return;
     }
     self.stop.enabled = YES;
+    self.receiverRunning = YES;
     self.status.stringValue = @"Receiver starting. Select “Soloist Runtime” in Spotify Connect to pair. Closing this app stops it.";
 }
 - (void)stop:(id)sender {

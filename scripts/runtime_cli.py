@@ -14,6 +14,7 @@ import sys
 import tempfile
 
 import client_api
+import audio_routing
 import credentials
 import receiver
 from native_audio import native_audio
@@ -170,6 +171,9 @@ def main(argv=None):
     secret_source.add_argument("--keychain", action="store_true")
     credential = sub.add_parser("credential", help="Manage the system credential store without argv secrets")
     credential.add_argument("action", choices=("status", "store"))
+    audio = sub.add_parser("audio", help="List or select the private server's macOS output")
+    audio.add_argument("action", choices=("outputs", "select"))
+    audio.add_argument("--uid", default="", help="CoreAudio UID; omit to follow the Mac default")
     check = sub.add_parser("doctor", help="Credential-free runtime and optional native audio check")
     check.add_argument("--soloist", type=Path)
     check.add_argument("--audio", action="store_true")
@@ -196,6 +200,16 @@ def main(argv=None):
             print(json.dumps({"stored": True}))
         else:
             print(json.dumps({"stored": credentials.exists()}))
+    elif args.operation == "audio":
+        if args.action == "outputs":
+            print(json.dumps({"outputs": [{key: item[key] for key in ("uid", "name", "is_default")}
+                                           for item in audio_routing.available_outputs()]}))
+        else:
+            if len(args.uid) > 512 or any(ord(char) < 32 for char in args.uid):
+                raise audio_routing.AudioRoutingError("Audio output UID is invalid")
+            selected = audio_routing.route(audio_routing.private_environment(), args.uid)
+            audio_routing.save_preference(args.uid)
+            print(json.dumps({key: selected[key] for key in ("uid", "name", "fallback_to_default")}))
     elif args.operation == "installation":
         print(json.dumps(installation()))
     elif args.operation == "describe":
@@ -204,6 +218,7 @@ def main(argv=None):
                           "execution_backend": "elfuse-hvf", "guest_kernel": False,
                           "soloist_included": False, "configured": CONFIG.is_file(),
                           "local_api": "soloist-websocket", "local_api_security": "unauthenticated-loopback-preview",
+                          "audio_output": "macos-default-or-coreaudio-uid",
                           "control_commands": sorted(client_api.FIELDS)}))
     elif args.operation == "endpoint":
         print(json.dumps({"integration_version": 1, "url": client_api.endpoint(),
@@ -226,6 +241,7 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except Exception as error:
         # Fixed validation messages are safe; arbitrary I/O/server text isn't.
-        message = str(error) if type(error) in (ConfigurationError, credentials.CredentialError) else "Operation failed; private details withheld"
+        message = str(error) if type(error) in (ConfigurationError, credentials.CredentialError,
+                                                audio_routing.AudioRoutingError) else "Operation failed; private details withheld"
         print(json.dumps({"error_type": type(error).__name__, "message": message}), file=sys.stderr)
         raise SystemExit(1)

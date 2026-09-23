@@ -11,6 +11,14 @@
    move or delete the downloaded original afterward.
 4. Select **Soloist Runtime** in Spotify Connect to authenticate and play.
 
+The **Spotify Connect device name** field controls how the receiver appears in
+Spotify; changing it takes effect after restarting the receiver. **Audio output**
+defaults to the current macOS output, not the first detected display or sound
+device. You can choose a specific output instead; the app remembers its CoreAudio
+UID across launches. If that output is disconnected, playback falls back to the
+current macOS default until it returns. Use **Refresh** after connecting a new
+device. A selection made while the receiver is playing is applied immediately.
+
 The launcher shows the installed version and expected expiry calculated from
 Soloist's build timestamp plus its documented 90-day lifetime. Select a newer
 official executable and click Start to replace an expiring or expired build.
@@ -57,6 +65,7 @@ Use the bundled command-line executable:
 "Soloist Runtime.app/Contents/Helpers/runtime-cli.app/Contents/MacOS/runtime-cli" describe
 "Soloist Runtime.app/Contents/Helpers/runtime-cli.app/Contents/MacOS/runtime-cli" doctor --audio --soloist /path/to/soloist
 "Soloist Runtime.app/Contents/Helpers/runtime-cli.app/Contents/MacOS/runtime-cli" credential store
+"Soloist Runtime.app/Contents/Helpers/runtime-cli.app/Contents/MacOS/runtime-cli" audio outputs
 "Soloist Runtime.app/Contents/Helpers/runtime-cli.app/Contents/MacOS/runtime-cli" configure --soloist /path/to/soloist --keychain
 "Soloist Runtime.app/Contents/Helpers/runtime-cli.app/Contents/MacOS/runtime-cli" installation
 "Soloist Runtime.app/Contents/Helpers/runtime-cli.app/Contents/MacOS/runtime-cli" run
@@ -68,7 +77,9 @@ when piped; it never accepts the key as a command argument. The legacy
 
 Add `--websocket on` to `run` to enable `status`, `endpoint` and `control` while
 running; packaged `run` defaults to Connect-only. `run --help`
-shows test-duration, buffer and recovery options. `SOLOIST_RUNTIME_HOME` can
+shows `--device-name`, `--audio-output-uid`, test-duration, buffer and recovery
+options. Use `audio select --uid UID` to change a running receiver's private
+output, or `audio select` to resume following the Mac default. `SOLOIST_RUNTIME_HOME` can
 select a different absolute data directory for isolated CLI integration tests.
 The graphical launcher uses the default profile.
 

@@ -142,7 +142,7 @@ def soloist_command(args, state, cache, engine, key_path, pulse_root):
 
 
 def run_session(args, state, cache, engine, key_path, secret, stop, deadline, attempt):
-    with contextlib.ExitStack() as stack, native_audio() as audio_env:
+    with contextlib.ExitStack() as stack, native_audio(args.audio_output_uid) as audio_env:
         inherited = ()
         if key_path is None:
             # elfuse reads an owner-only regular file before guest startup. An
@@ -173,11 +173,17 @@ def run_session(args, state, cache, engine, key_path, secret, stop, deadline, at
             child_pid = pid
             private_text(pid_file, str(pid) + "\n")
             print("RECEIVER: started; recovery attempt", attempt, flush=True)
+        def health():
+            if not audio_env.alive():
+                return False
+            try:
+                audio_env.refresh_route()
+            except Exception:
+                print("AUDIO: output routing check failed; retaining current output", flush=True)
+            return args.websocket == "off" or asyncio.run(api_health(state))
         try:
             result = run_child(command, environment, stop, deadline, consume, started=started,
-                               pass_fds=inherited,
-                               health=lambda: audio_env.alive() and
-                               (args.websocket == "off" or asyncio.run(api_health(state))))
+                               pass_fds=inherited, health=health)
             summary = dict(exit_code=result.code, reason=result.reason, forced=result.forced,
                            integrity=integrity, recovery_attempt=attempt)
             private_text(state / "last-exit.json", json.dumps(summary) + "\n")
@@ -197,6 +203,7 @@ def main(argv=None):
     parser.add_argument("--soloist", help="Official Linux ARM64 executable")
     parser.add_argument("--api-key-file", help="Owner-only file containing your Soloist API key")
     parser.add_argument("--device-name", default="Soloist Runtime" if BUNDLED else "Soloist macOS Lab")
+    parser.add_argument("--audio-output-uid", default="", help="CoreAudio UID; empty follows the Mac default")
     parser.add_argument("--audio-latency-ms", type=int, default=0,
                         help="PulseAudio buffer target, 20..2000 ms; 0 uses the engine default")
     parser.add_argument("--websocket", choices=("on", "off"), default="off" if BUNDLED else "on",
@@ -204,6 +211,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if not 1 <= len(args.device_name) <= 64 or any(ord(char) < 32 for char in args.device_name):
         parser.error("device name must be 1..64 printable characters")
+    if len(args.audio_output_uid) > 512 or any(ord(char) < 32 for char in args.audio_output_uid):
+        parser.error("audio output UID is invalid")
     if args.seconds != 0 and not 30 <= args.seconds <= 86400:
         parser.error("duration must be 0 or 30..86400 seconds")
     if not 0 <= args.restart_limit <= 10:

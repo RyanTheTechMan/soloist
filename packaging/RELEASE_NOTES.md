@@ -6,6 +6,8 @@ in macOS Keychain and installs a
 private copy of the selected executable and shows its expected build expiry.
 It defaults to Spotify Connect only; local WebSocket control is opt-in and
 loopback-only. Run on login and Auto start on launch are independent options.
+The receiver follows the macOS default audio output unless an output is selected
+and remembered. The Spotify Connect device name is configurable in the launcher.
 
 This app is ad-hoc signed and not notarized. The graphical setup has an unresolved
 first-run file access issue; the bundled command-line setup is the verified path.
