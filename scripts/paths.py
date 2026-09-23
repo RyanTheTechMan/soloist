@@ -24,7 +24,8 @@ PAREC = BUNDLE_CONTENTS / "Frameworks/parec" if BUNDLED else Path("/opt/homebrew
 PULSE_MODULES = BUNDLE_CONTENTS / "Frameworks" if BUNDLED else Path("/opt/homebrew/opt/pulseaudio/lib/pulseaudio/modules")
 CERTIFICATES = SYSROOT / "etc/ssl/certs/ca-certificates.crt"
 CONFIG = STATE / "installation.json"
-VERSION = "0.1.0-dev"
+ENGINE = DATA / "engine/soloist"
+VERSION = (PAYLOAD / "version.txt").read_text().strip() if BUNDLED else "0.1.0-dev"
 
 
 def configured_path(name, override=None):

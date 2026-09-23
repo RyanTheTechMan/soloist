@@ -2,19 +2,22 @@
 import argparse
 import asyncio
 import contextlib
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 import client_api
 import receiver
 from native_audio import native_audio
 from observe import safe_event
-from paths import BUNDLED, CONFIG, DATA, PACTL, RUNTIME, STATE, SYSROOT, VERSION
+from paths import BUNDLED, CONFIG, DATA, ENGINE, PACTL, RUNTIME, STATE, SYSROOT, VERSION
 
 
 class ConfigurationError(ValueError):
@@ -32,6 +35,41 @@ def validate_engine(path):
     return path
 
 
+def engine_metadata(engine):
+    """Inspect an official build without account credentials or starting playback."""
+    process = subprocess.run([str(RUNTIME), "--no-rosetta", "--clear-env", "--sysroot", str(SYSROOT),
+                              "--", str(engine), "--version"], capture_output=True, timeout=20,
+                             env={"PATH": os.defpath, "ELFUSE_VERIFY_TEXT": "1"})
+    output = process.stdout + process.stderr
+    version = re.search(rb"\bsoloist (\d+(?:\.\d+){1,4})\b", output)
+    built = re.search(rb"\bbuild (\d{10})\b", output)
+    if process.returncode != 0 or not version or not built or not all(
+        marker in output for marker in (b"INTEGRITY: executable-byte preflight passed",
+                                  b"INTEGRITY: executable-byte exit comparison passed")):
+        raise ConfigurationError("Soloist version check failed; choose a current official Linux ARM64 build")
+    build_time = datetime.fromtimestamp(int(built.group(1)), timezone.utc)
+    expires = build_time + timedelta(days=90)
+    return {"soloist_version": version.group(1).decode("ascii"),
+            "build_at": build_time.isoformat().replace("+00:00", "Z"),
+            "expected_expiry_at": expires.isoformat().replace("+00:00", "Z")}
+
+
+def installation():
+    if not CONFIG.is_file():
+        return {"configured": False}
+    settings = json.loads(CONFIG.read_text())
+    result = {"configured": True, "executable_installed": Path(settings["soloist"]).is_file(),
+              "soloist_version": settings.get("soloist_version"),
+              "build_at": settings.get("build_at"),
+              "expected_expiry_at": settings.get("expected_expiry_at")}
+    if result["expected_expiry_at"]:
+        expiry = datetime.fromisoformat(result["expected_expiry_at"].replace("Z", "+00:00"))
+        seconds = (expiry - datetime.now(timezone.utc)).total_seconds()
+        result["expired"] = seconds <= 0
+        result["days_remaining"] = max(0, int(seconds // 86400))
+    return result
+
+
 def configure(engine, key):
     engine = validate_engine(engine)
     key = key.expanduser().resolve(strict=True)
@@ -44,10 +82,34 @@ def configure(engine, key):
     if len(raw) > 4097 or not secret or len(secret) > 4096 or b"\0" in secret or b"\n" in secret or b"\r" in secret:
         raise ConfigurationError("API-key file must contain one nonempty key")
     DATA.mkdir(parents=True, exist_ok=True, mode=0o700)
+    DATA.chmod(0o700)
     STATE.mkdir(exist_ok=True, mode=0o700)
     STATE.chmod(0o700)
-    receiver.private_text(CONFIG, json.dumps({"soloist": str(engine), "api_key_file": str(key)}) + "\n")
-    print(json.dumps({"configured": True, "executable_copied": False, "key_copied": False}))
+    ENGINE.parent.mkdir(exist_ok=True, mode=0o700)
+    if ENGINE.parent.is_symlink() or ENGINE.is_symlink():
+        raise ConfigurationError("Private installation location must not be a symlink")
+    ENGINE.parent.chmod(0o700)
+    copied = engine != ENGINE.resolve()
+    temporary = None
+    try:
+        if copied:
+            descriptor, temporary = tempfile.mkstemp(prefix=".soloist-", dir=ENGINE.parent)
+            with os.fdopen(descriptor, "wb") as output, engine.open("rb") as source:
+                shutil.copyfileobj(source, output)
+                output.flush()
+                os.fsync(output.fileno())
+            os.chmod(temporary, 0o700)
+            metadata = engine_metadata(Path(temporary))
+            os.replace(temporary, ENGINE)
+            temporary = None
+        else:
+            metadata = engine_metadata(ENGINE)
+        settings = {"soloist": str(ENGINE), "api_key_file": str(key), **metadata}
+        receiver.private_text(CONFIG, json.dumps(settings) + "\n")
+    finally:
+        if temporary is not None and os.path.exists(temporary):
+            os.unlink(temporary)
+    print(json.dumps({**installation(), "executable_copied": copied, "key_copied": False}))
 
 
 def doctor(engine=None, audio=False):
@@ -91,7 +153,8 @@ def main(argv=None):
     sub.add_parser("describe", help="Machine-readable integration capabilities, no credentials")
     sub.add_parser("endpoint", help="Local endpoint for a same-user client; preview has no API authentication")
     sub.add_parser("status", help="Safe current state, no song/account metadata")
-    setup = sub.add_parser("configure", help="Remember paths to separately supplied official files")
+    sub.add_parser("installation", help="Show installed build and expected expiry; no account data")
+    setup = sub.add_parser("configure", help="Copy selected official executable into private app data")
     setup.add_argument("--soloist", type=Path, required=True)
     setup.add_argument("--api-key-file", type=Path, required=True)
     check = sub.add_parser("doctor", help="Credential-free runtime and optional native audio check")
@@ -109,6 +172,8 @@ def main(argv=None):
         configure(args.soloist, args.api_key_file)
     elif args.operation == "doctor":
         return doctor(args.soloist, args.audio)
+    elif args.operation == "installation":
+        print(json.dumps(installation()))
     elif args.operation == "describe":
         print(json.dumps({"runtime_version": VERSION, "integration_version": 1,
                           "host_platforms": ["macos-arm64"], "packaged": BUNDLED,

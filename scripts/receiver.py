@@ -122,24 +122,30 @@ async def api_health(state):
                     return True
 
 
+def soloist_command(args, state, cache, engine, key_path, pulse_root):
+    command = [str(RUNTIME), "--no-rosetta", "--clear-env", "--timeout", "10",
+               "--sysroot", str(SYSROOT), "--append-arg-file", str(key_path),
+               "--env", "PULSE_SERVER=unix:" + str(pulse_root / "native"),
+               "--env", "PULSE_COOKIE=" + str(pulse_root / "cookie"),
+               "--env", "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+               "--", str(engine), "-n", args.device_name, "-D", str(state),
+               "-C", str(cache), "-z", "100", "-i", "5", "-v", "-k"]
+    if args.websocket == "on":
+        command[-1:-1] = ["-w", "127.0.0.1:0"]
+    if args.audio_latency_ms:
+        command[command.index("--"):command.index("--")] = [
+            "--env", "PULSE_LATENCY_MSEC=" + str(args.audio_latency_ms)]
+    return command
+
+
 def run_session(args, state, cache, engine, key_path, secret, stop, deadline, attempt):
-    sysroot = SYSROOT
     with native_audio() as audio_env:
         pulse_root = Path(audio_env["PULSE_RUNTIME_PATH"]).resolve()
         pulse_hint = state / "audio.path"
         pid_file = state / "receiver.pid"
         private_text(pulse_hint, str(pulse_root) + "\n")
-        command = [str(RUNTIME), "--no-rosetta", "--clear-env", "--timeout", "10",
-                   "--sysroot", str(sysroot), "--append-arg-file", str(key_path),
-                   "--env", "PULSE_SERVER=unix:" + str(pulse_root / "native"),
-                   "--env", "PULSE_COOKIE=" + str(pulse_root / "cookie"),
-                   "--env", "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
-                   "--", str(engine), "-n", args.device_name, "-D", str(state),
-                   "-C", str(cache), "-z", "100", "-w", "127.0.0.1:0", "-i", "5", "-v", "-k"]
+        command = soloist_command(args, state, cache, engine, key_path, pulse_root)
         environment = {"PATH": os.defpath, "ELFUSE_VERIFY_TEXT": "1", "ELFUSE_FORWARD_TERMINATION": "1"}
-        if args.audio_latency_ms:
-            command[command.index("--"):command.index("--")] = [
-                "--env", "PULSE_LATENCY_MSEC=" + str(args.audio_latency_ms)]
         integrity = {"preflight": False, "exit": False}
         def consume(raw):
             if re.fullmatch(rb"INTEGRITY: executable-byte preflight passed \(\d+ bytes\)", raw):
@@ -155,7 +161,8 @@ def run_session(args, state, cache, engine, key_path, secret, stop, deadline, at
             print("RECEIVER: started; recovery attempt", attempt, flush=True)
         try:
             result = run_child(command, environment, stop, deadline, consume, started=started,
-                               health=lambda: audio_env.alive() and asyncio.run(api_health(state)))
+                               health=lambda: audio_env.alive() and
+                               (args.websocket == "off" or asyncio.run(api_health(state))))
             summary = dict(exit_code=result.code, reason=result.reason, forced=result.forced,
                            integrity=integrity, recovery_attempt=attempt)
             private_text(state / "last-exit.json", json.dumps(summary) + "\n")
@@ -172,11 +179,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--seconds", type=int, default=0, help="0 runs until stopped; otherwise 30..86400")
     parser.add_argument("--restart-limit", type=int, default=3, help="Finite recovery budget; 0 disables retries")
-    parser.add_argument("--soloist", help="Official Linux ARM64 executable (never copied into source)")
+    parser.add_argument("--soloist", help="Official Linux ARM64 executable")
     parser.add_argument("--api-key-file", help="Owner-only file containing your Soloist API key")
     parser.add_argument("--device-name", default="Soloist Runtime" if BUNDLED else "Soloist macOS Lab")
     parser.add_argument("--audio-latency-ms", type=int, default=0,
                         help="PulseAudio buffer target, 20..2000 ms; 0 uses the engine default")
+    parser.add_argument("--websocket", choices=("on", "off"), default="off" if BUNDLED else "on",
+                        help="Local unauthenticated API; packaged default is off, always loopback-only")
     args = parser.parse_args(argv)
     if not 1 <= len(args.device_name) <= 64 or any(ord(char) < 32 for char in args.device_name):
         parser.error("device name must be 1..64 printable characters")
@@ -192,6 +201,9 @@ def main(argv=None):
         path.chmod(0o700)
     lock = (state / "receiver.lock").open("a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if args.websocket == "off":
+        for name in ("ws.addr", "ws.port"):
+            (state / name).unlink(missing_ok=True)
     engine = configured_path("soloist", args.soloist)
     key_path = configured_path("api_key_file", args.api_key_file)
     if key_path.stat().st_uid != os.getuid() or key_path.stat().st_mode & 0o077:

@@ -5,6 +5,8 @@
 @property NSTextField *engine;
 @property NSTextField *key;
 @property NSTextField *status;
+@property NSTextField *expiry;
+@property NSButton *websocket;
 @property NSButton *start;
 @property NSButton *stop;
 @property NSTask *task;
@@ -29,7 +31,7 @@
     [actions addItemWithTitle:@"Quit Soloist Runtime" action:@selector(terminate:) keyEquivalent:@"q"];
     application.submenu = actions;
     NSApp.mainMenu = menu;
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 350)
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 620, 410)
                                             styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
                                               backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"Soloist Runtime";
@@ -62,9 +64,17 @@
         [row.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
         [browse.widthAnchor constraintEqualToConstant:92].active = YES;
     }
-    self.status = [self label:@"Setup stores file paths only. When started, Soloist authenticates directly with Spotify." size:13];
+    self.status = [self label:@"Choose the official executable and your private API-key file, then Start." size:13];
     [stack addArrangedSubview:self.status];
     [self.status.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    self.expiry = [self label:@"No Soloist build installed yet." size:13];
+    [stack addArrangedSubview:self.expiry];
+    [self.expiry.widthAnchor constraintEqualToAnchor:stack.widthAnchor].active = YES;
+    self.websocket = [NSButton checkboxWithTitle:@"Enable local WebSocket control for trusted apps" target:nil action:nil];
+    self.websocket.state = [[NSUserDefaults standardUserDefaults] boolForKey:@"enableWebSocket"]
+        ? NSControlStateValueOn : NSControlStateValueOff;
+    self.websocket.toolTip = @"Unauthenticated API on this Mac only (127.0.0.1). Never expose it to a LAN or browser.";
+    [stack addArrangedSubview:self.websocket];
     NSButton *download = [NSButton buttonWithTitle:@"Get Soloist" target:self action:@selector(download:)];
     self.start = [NSButton buttonWithTitle:@"Start" target:self action:@selector(start:)];
     self.stop = [NSButton buttonWithTitle:@"Stop" target:self action:@selector(stop:)];
@@ -76,13 +86,36 @@
     NSDictionary *settings = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     if ([settings[@"soloist"] isKindOfClass:NSString.class]) self.engine.stringValue = settings[@"soloist"];
     if ([settings[@"api_key_file"] isKindOfClass:NSString.class]) self.key.stringValue = settings[@"api_key_file"];
+    [self refreshExpiry];
     [self.window center];
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activate];
 }
+- (void)refreshExpiry {
+    NSURL *support = [[NSFileManager defaultManager] URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask].firstObject;
+    NSURL *config = [support URLByAppendingPathComponent:@"Soloist Runtime/state/installation.json"];
+    NSData *data = [NSData dataWithContentsOfURL:config];
+    NSDictionary *settings = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if ([settings[@"soloist"] isKindOfClass:NSString.class]) self.engine.stringValue = settings[@"soloist"];
+    NSString *stamp = [settings[@"expected_expiry_at"] isKindOfClass:NSString.class] ? settings[@"expected_expiry_at"] : nil;
+    NSString *version = [settings[@"soloist_version"] isKindOfClass:NSString.class] ? settings[@"soloist_version"] : @"unknown";
+    NSISO8601DateFormatter *parser = [NSISO8601DateFormatter new];
+    NSDate *expiry = stamp ? [parser dateFromString:stamp] : nil;
+    if (!expiry) {
+        self.expiry.stringValue = settings ? @"Build expiry unknown. Select a current official build to install it." : @"No Soloist build installed yet.";
+        return;
+    }
+    NSDateFormatter *display = [NSDateFormatter new];
+    display.dateFormat = @"MMM d, yyyy 'at' HH:mm 'UTC'";
+    display.timeZone = [NSTimeZone timeZoneWithAbbreviation:@"UTC"];
+    NSString *date = [display stringFromDate:expiry];
+    NSTimeInterval remaining = [expiry timeIntervalSinceNow];
+    self.expiry.stringValue = remaining <= 0
+        ? [NSString stringWithFormat:@"Soloist %@ expired %@. Download a newer build.", version, date]
+        : [NSString stringWithFormat:@"Soloist %@ expected expiry: %@ (%ld days left).", version, date, (long)(remaining / 86400)];
+}
 - (void)choose:(NSButton *)sender {
     NSOpenPanel *panel = [NSOpenPanel openPanel];
-    panel.allowedContentTypes = @[];
     panel.canChooseFiles = YES;
     panel.canChooseDirectories = NO;
     panel.allowsMultipleSelection = NO;
@@ -110,17 +143,26 @@
     check.executableURL = self.helper;
     check.arguments = @[@"configure", @"--soloist", self.engine.stringValue, @"--api-key-file", self.key.stringValue];
     NSPipe *errors = [NSPipe pipe];
-    check.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    NSPipe *output = [NSPipe pipe];
+    check.standardOutput = output;
     check.standardError = errors;
     check.terminationHandler = ^(NSTask *finished) {
         NSData *data = [errors.fileHandleForReading readDataToEndOfFile];
+        NSData *reply = [output.fileHandleForReading readDataToEndOfFile];
         NSDictionary *diagnostic = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+        NSDictionary *configured = reply ? [NSJSONSerialization JSONObjectWithData:reply options:0 error:nil] : nil;
         dispatch_async(dispatch_get_main_queue(), ^{
             self.task = nil;
             self.stop.enabled = NO;
             if (self.quitting) { [NSApp replyToApplicationShouldTerminate:YES]; return; }
             if (finished.terminationStatus != 0) {
                 self.status.stringValue = [diagnostic[@"message"] isKindOfClass:NSString.class] ? diagnostic[@"message"] : @"Setup failed. Check the executable and key-file permissions.";
+                self.start.enabled = YES;
+                return;
+            }
+            [self refreshExpiry];
+            if ([configured[@"expired"] boolValue]) {
+                self.status.stringValue = @"This official Soloist build has expired. Choose a newer download before starting.";
                 self.start.enabled = YES;
                 return;
             }
@@ -143,9 +185,11 @@
     }
 }
 - (void)launchReceiver {
+    [[NSUserDefaults standardUserDefaults] setBool:self.websocket.state == NSControlStateValueOn forKey:@"enableWebSocket"];
     NSTask *task = [NSTask new];
     task.executableURL = self.helper;
-    task.arguments = @[@"run", @"--audio-latency-ms", @"100"];
+    task.arguments = @[@"run", @"--audio-latency-ms", @"100", @"--websocket",
+                       self.websocket.state == NSControlStateValueOn ? @"on" : @"off"];
     task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
     task.standardError = [NSFileHandle fileHandleWithNullDevice];
     task.terminationHandler = ^(NSTask *finished) {

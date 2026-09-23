@@ -1,0 +1,121 @@
+name: Build macOS runtime
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Leave blank for a build; enter vMAJOR.MINOR.PATCH to create a draft release"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: packaging/requirements.txt
+      - name: Validate host and release version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test "$(sw_vers -productVersion | cut -d. -f1)" = 27
+          xcodebuild -version
+          if [[ -n "$RELEASE_TAG" ]]; then
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            printf 'PACKAGE_VERSION=%s\n' "${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          else
+            printf 'PACKAGE_VERSION=0.1.0\n' >> "$GITHUB_ENV"
+          fi
+      - name: Install build dependencies
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew install binutils pulseaudio ca-certificates
+          python -m pip install -r packaging/requirements.txt
+      - name: Build public runtime without Soloist or credentials
+        run: python scripts/setup.py --build-only
+      - name: Test local interfaces
+        run: |
+          python scripts/test-package.py
+          python scripts/test-receiver.py
+          python scripts/test-client-api.py
+          python scripts/test-playback-cycles.py
+      - name: Build and audit app
+        run: |
+          python scripts/build-package.py --version "$PACKAGE_VERSION"
+          python scripts/verify-package.py "dist/Soloist Runtime.app"
+      - name: Archive and check extracted app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/Soloist Runtime.app" "dist/SoloistRuntime-macos-arm64.zip"
+          mkdir -p "$RUNNER_TEMP/soloist-extracted"
+          ditto -x -k "dist/SoloistRuntime-macos-arm64.zip" \
+            "$RUNNER_TEMP/soloist-extracted"
+          python scripts/verify-package.py \
+            "$RUNNER_TEMP/soloist-extracted/Soloist Runtime.app"
+          git archive --format=zip --output=dist/SoloistRuntime-source.zip HEAD
+          (cd dist && shasum -a 256 SoloistRuntime-macos-arm64.zip \
+            SoloistRuntime-source.zip > SHA256SUMS)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: soloist-runtime-macos-arm64
+          path: |
+            dist/SoloistRuntime-macos-arm64.zip
+            dist/SoloistRuntime-source.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  draft-release:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          name: soloist-runtime-macos-arm64
+          path: release-assets
+      - name: Create draft release from this commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if git rev-parse -q --verify "refs/tags/$RELEASE_TAG^{commit}" >/dev/null; then
+            test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
+          fi
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release tag already has a release" >&2
+            exit 1
+          fi
+          (cd release-assets && sha256sum --check SHA256SUMS)
+          gh release create "$RELEASE_TAG" \
+            release-assets/SoloistRuntime-macos-arm64.zip \
+            release-assets/SoloistRuntime-source.zip \
+            release-assets/SHA256SUMS \
+            --target "$GITHUB_SHA" --draft \
+            --title "Soloist Runtime $RELEASE_TAG" \
+            --notes-file packaging/RELEASE_NOTES.md

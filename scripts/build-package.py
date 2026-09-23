@@ -14,7 +14,7 @@ import sys
 import tarfile
 import tempfile
 
-from paths import ROOT, RUNTIME, VERSION
+from paths import ROOT, RUNTIME
 
 NATIVE_ROOT = Path("/opt/homebrew/opt/pulseaudio")
 MODULES = ("module-native-protocol-unix.so", "module-coreaudio-detect.so",
@@ -132,9 +132,12 @@ def licenses(destination, packages):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--name", default="Soloist Runtime", help="Local output app basename")
+    parser.add_argument("--version", default="0.1.0", help="Package version as MAJOR.MINOR.PATCH")
     args = parser.parse_args()
     if not args.name or any(value in args.name for value in ("/", "\\", "..")):
         parser.error("Choose a simple app basename")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", args.version):
+        parser.error("Version must be MAJOR.MINOR.PATCH")
     output = ROOT / "dist" / (args.name + ".app")
     if output.exists():
         parser.error("Output already exists; choose another --name to preserve the previous build")
@@ -153,6 +156,7 @@ def main():
     shutil.copytree(work / "frozen/runtime-cli.app", helper, symlinks=True)
     payload = helper / "Contents/Resources/payload"
     payload.mkdir()
+    (payload / "version.txt").write_text(args.version + "\n")
     shutil.copy2(RUNTIME, helper / "Contents/MacOS/elfuse")
     # Linux payload is added after freezing: never let a Mach-O packager process
     # it as native code, and never copy the development sysroot or saved state.
@@ -168,7 +172,7 @@ def main():
     licenses(resources / "Licenses", native)
     shutil.copy2(ROOT / "packaging/QUICKSTART.md", resources / "QUICKSTART.md")
     run("codesign", "--force", "--sign", "-", helper)
-    manifest = {"version": VERSION, "platform": "macos-arm64", "soloist_included": False,
+    manifest = {"version": args.version, "platform": "macos-arm64", "soloist_included": False,
                 "source_revision": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
                 "source_dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT)),
                 "signing": "local-ad-hoc-not-notarized", "native_packages": native,
@@ -186,7 +190,8 @@ def main():
         "-o", macos / "SoloistRuntime")
     info = {"CFBundleExecutable": "SoloistRuntime", "CFBundleIdentifier": "local.soloistcompat.runtime",
             "CFBundleName": "Soloist Runtime", "CFBundleDisplayName": "Soloist Runtime",
-            "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "CFBundleShortVersionString": "0.1.0",
+            "CFBundlePackageType": "APPL", "CFBundleVersion": args.version,
+            "CFBundleShortVersionString": args.version,
             "LSMinimumSystemVersion": "27.0", "NSHighResolutionCapable": True,
             "NSLocalNetworkUsageDescription": "Discover and pair your local Spotify Connect receiver."}
     with (contents / "Info.plist").open("wb") as stream:

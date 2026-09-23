@@ -51,7 +51,9 @@ Android possibilities and the separate iOS interpreter research question.
 A local `.app` builder now bundles the runtime, production Linux libraries,
 private macOS audio dependencies and frozen command-line controls. End users do
 not need Homebrew, Python or a compiler. The separately supplied official Soloist
-executable and API-key file stay outside the bundle. Packaged state is isolated
+executable and API-key file stay outside the bundle. Setup copies the selected
+executable into private Application Support storage and shows its expected
+expiry; the key file remains at its chosen path. Packaged state is isolated
 from the development receiver under Application Support.
 
 Strict signatures, payload auditing, relocation, credential-free engine startup,
@@ -61,6 +63,10 @@ permission test; do not treat this as a finished one-click release. No public
 notarization or API access-control claim is made.
 See [package build/integration instructions](docs/PACKAGING.md) and
 [local quick start](packaging/QUICKSTART.md).
+The launcher defaults to Spotify Connect only, with an opt-in loopback
+WebSocket for trusted local clients. The build workflow can produce a draft
+GitHub Release from a manually supplied version tag; no official executable or
+account key enters CI.
 
 ## Set up from source
 
